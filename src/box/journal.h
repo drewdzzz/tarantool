@@ -128,16 +128,21 @@ struct journal_queue {
 	 * Whether the queue is being woken or not. Used to avoid multiple
 	 * concurrent wake-ups.
 	 */
-	bool is_awake;
-	/**
-	 * A flag used to tell the waiting fibers they may proceed even if the
-	 * queue is full, i.e. force them to submit a write request.
-	 */
-	bool is_ready;
+	bool waiter_count;
 };
 
 /** A single queue for all journal instances. */
 extern struct journal_queue journal_queue;
+
+/**
+ * Check whether anyone is waiting for the journal queue to empty. If there are
+ * other waiters we must go after them to preserve write order.
+ */
+static inline bool
+journal_queue_has_waiters(void)
+{
+	return journal_queue.waiter_count != 0;
+}
 
 /**
  * An API for an abstract journal for all transactions of this
@@ -166,7 +171,7 @@ extern struct journal *current_journal;
  *                    full.
  */
 void
-journal_queue_wakeup(bool force_ready);
+journal_queue_wakeup(void);
 
 /**
  * Check whether any of the queue size limits is reached.
@@ -180,27 +185,19 @@ journal_queue_is_full(void)
 	       journal_queue.len > journal_queue.max_len;
 }
 
-/**
- * Check whether anyone is waiting for the journal queue to empty. If there are
- * other waiters we must go after them to preserve write order.
- */
-static inline bool
-journal_queue_has_waiters(void)
-{
-	return !rlist_empty(&journal_queue.waiters);
-}
-
 /** Yield until there's some space in the journal queue. */
 void
-journal_wait_queue(void);
+journal_queue_wait(void);
+
+void
+journal_queue_flush(void);
 
 /** Set maximal journal queue size in bytes. */
 static inline void
 journal_queue_set_max_size(int64_t size)
 {
 	journal_queue.max_size = size;
-	if (journal_queue_has_waiters() && !journal_queue_is_full())
-		journal_queue_wakeup(false);
+	journal_queue_wakeup();
 }
 
 /** Set maximal journal queue length, in entries. */
@@ -208,8 +205,7 @@ static inline void
 journal_queue_set_max_len(int64_t len)
 {
 	journal_queue.max_len = len;
-	if (journal_queue_has_waiters() && !journal_queue_is_full())
-		journal_queue_wakeup(false);
+	journal_queue_wakeup();
 }
 
 /** Increase queue size on a new write request. */
@@ -239,8 +235,7 @@ journal_async_complete(struct journal_entry *entry)
 	assert(entry->write_async_cb != NULL);
 
 	journal_queue_on_complete(entry);
-	if (journal_queue_has_waiters() && !journal_queue_is_full())
-		journal_queue_wakeup(false);
+	journal_queue_wakeup();
 
 	entry->write_async_cb(entry);
 }
@@ -253,16 +248,7 @@ journal_async_complete(struct journal_entry *entry)
 static inline int
 journal_write(struct journal_entry *entry)
 {
-	if (journal_queue_has_waiters()) {
-		/*
-		 * It's a synchronous write, so it's fine to wait a bit more for
-		 * everyone else to be written. They'll wake us up back
-		 * afterwards.
-		 */
-		journal_queue_wakeup(true);
-		journal_wait_queue();
-	}
-
+	journal_queue_flush();
 	journal_queue_on_append(entry);
 
 	return current_journal->write(current_journal, entry);
@@ -280,7 +266,7 @@ journal_write_async(struct journal_entry *entry)
 	 * It's the job of the caller to check whether the queue is full prior
 	 * to submitting the request.
 	 */
-	assert(!journal_queue_is_full() || journal_queue.is_ready);
+	assert(journal_queue.waiter_count == 0);
 	journal_queue_on_append(entry);
 
 	return current_journal->write_async(current_journal, entry);

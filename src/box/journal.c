@@ -40,8 +40,7 @@ struct journal_queue journal_queue = {
 	.max_len = INT64_MAX,
 	.len = 0,
 	.waiters = RLIST_HEAD_INITIALIZER(journal_queue.waiters),
-	.is_awake = false,
-	.is_ready = false,
+	.waiter_count = 0,
 };
 
 struct journal_entry *
@@ -66,63 +65,38 @@ journal_entry_new(size_t n_rows, struct region *region,
 	return entry;
 }
 
-struct journal_queue_entry {
-	/** The fiber waiting for queue space to free. */
-	struct fiber *fiber;
-	/** A link in all waiting fibers list. */
-	struct rlist in_queue;
-};
-
-/**
- * Wake up the first waiter in the journal queue.
- */
-static inline void
-journal_queue_wakeup_first(void)
+void
+journal_queue_wakeup(void)
 {
-	struct journal_queue_entry *e;
-	if (rlist_empty(&journal_queue.waiters))
-		goto out;
-	/*
-	 * When the queue isn't forcefully emptied, no need to wake everyone
-	 * else up until there's some free space.
-	 */
-	if (!journal_queue.is_ready && journal_queue_is_full())
-		goto out;
-	e = rlist_entry(rlist_first(&journal_queue.waiters), typeof(*e),
-			in_queue);
-	fiber_wakeup(e->fiber);
-	return;
-out:
-	journal_queue.is_awake = false;
-	journal_queue.is_ready = false;
+	struct rlist *list = &journal_queue.waiters;
+	if (!rlist_empty(list) && !journal_queue_is_full())
+		fiber_wakeup(rlist_first_entry(list, struct fiber, state));
 }
 
 void
-journal_queue_wakeup(bool force_ready)
+journal_queue_wait(void)
 {
-	assert(!rlist_empty(&journal_queue.waiters));
-	if (journal_queue.is_awake)
+	if (!journal_queue_is_full() && !journal_queue_has_waiters())
 		return;
-	journal_queue.is_awake = true;
-	journal_queue.is_ready = force_ready;
-	journal_queue_wakeup_first();
-}
-
-void
-journal_wait_queue(void)
-{
-	struct journal_queue_entry entry = {
-		.fiber = fiber(),
-	};
-	rlist_add_tail_entry(&journal_queue.waiters, &entry, in_queue);
+	++journal_queue.waiter_count;
+	rlist_add_tail_entry(&journal_queue.waiters, fiber(), state);
 	/*
 	 * Will be waken up by either queue emptying or a synchronous write.
 	 */
-	while (journal_queue_is_full() && !journal_queue.is_ready)
+	do {
 		fiber_yield();
+	} while (journal_queue_is_full());
+	--journal_queue.waiter_count;
+	journal_queue_wakeup();
+}
 
-	assert(&entry.in_queue == rlist_first(&journal_queue.waiters));
-	rlist_del(&entry.in_queue);
-
-	journal_queue_wakeup_first();
+void
+journal_queue_flush(void)
+{
+	if (!journal_queue_has_waiters())
+		return;
+	struct rlist *list = &journal_queue.waiters;
+	while (!rlist_empty(list))
+		fiber_wakeup(rlist_first_entry(list, struct fiber, state));
+	journal_queue_wait();
 }
