@@ -113,6 +113,7 @@ add_library(xlog STATIC xlog.c)
 target_link_libraries(xlog core box_error crc32 ${ZSTD_LIBRARIES})
 
 add_library(box STATIC
+    export_utils.c
     msgpack.c
     iproto.cc
     xrow_io.cc
@@ -260,7 +261,7 @@ add_custom_command(OUTPUT ${SQL_BIN_DIR}/opcodes.c
     DEPENDS ${SQL_SRC_DIR}/vdbe.c ${EXT_SRC_DIR}/mkopcodec.sh ${SQL_BIN_DIR}/parse.h
         ${SQL_BIN_DIR}/opcodes.h)
 
-target_link_libraries(box box_error tuple stat xrow xlog vclock crc32 scramble
+target_link_libraries(box box_error tuple file_stream stat xrow xlog vclock crc32 scramble
                       raft ${common_libraries})
 
 add_dependencies(box build_bundled_libs generate_sql_files)

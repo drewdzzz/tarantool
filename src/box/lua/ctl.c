@@ -43,6 +43,7 @@
 #include "box/schema.h"
 #include "box/engine.h"
 #include "box/memtx_engine.h"
+#include "box/export_utils.h"
 
 static int
 lbox_ctl_wait_ro(struct lua_State *L)
@@ -98,6 +99,20 @@ lbox_ctl_is_recovery_finished(struct lua_State *L)
 	return 1;
 }
 
+static int
+lbox_ctl_export(struct lua_State *L)
+{
+    if (!box_is_configured())
+        luaL_error(L, "Please call box.cfg{} first");
+    if (lua_gettop(L) != 1 || !lua_isstring(L, 1))
+        luaL_error(L, "Usage: box.ctl.export(<filename>)\n");
+    const char *filename = lua_tostring(L, 1);
+    int err_code = export_database(filename);
+    if (err_code != 0)
+        luaT_error(L);
+    return 0;
+}
+
 static const struct luaL_Reg lbox_ctl_lib[] = {
 	{"wait_ro", lbox_ctl_wait_ro},
 	{"wait_rw", lbox_ctl_wait_rw},
@@ -105,6 +120,7 @@ static const struct luaL_Reg lbox_ctl_lib[] = {
 	{"on_schema_init", lbox_ctl_on_schema_init},
 	{"clear_synchro_queue", lbox_ctl_clear_synchro_queue},
 	{"is_recovery_finished", lbox_ctl_is_recovery_finished},
+	{"export", lbox_ctl_export},
 	{NULL, NULL}
 };
 
