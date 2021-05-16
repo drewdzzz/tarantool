@@ -18,6 +18,8 @@ include_directories(${CURL_INCLUDE_DIRS})
 
 add_library(unit STATIC unit.c)
 
+add_executable(file_stream.test file_stream.c core_test_utils.c)
+target_link_libraries(file_stream.test file_stream unit core)
 add_executable(heap.test heap.c)
 target_link_libraries(heap.test unit)
 add_executable(heap_iterator.test heap_iterator.c)
