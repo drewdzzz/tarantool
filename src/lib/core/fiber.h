@@ -578,6 +578,8 @@ struct fiber {
 
 	/** Triggers invoked before this fiber yields. Must not throw. */
 	struct rlist on_yield;
+	/** Triggers invoked before this fiber starts/continues. Must not throw. */
+	struct rlist on_resume;
 	/**
 	 * Triggers invoked before this fiber is stopped/reset/
 	 * recycled/destroyed/reused. In other words, each time

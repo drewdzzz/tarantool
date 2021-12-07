@@ -119,6 +119,7 @@ set (server_sources
      lua/digest.c
      lua/init.c
      lua/fiber.c
+     box/box_timeout.c
      lua/fiber_cond.c
      lua/fiber_channel.c
      lua/trigger.c

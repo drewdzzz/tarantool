@@ -403,6 +403,9 @@ fiber_call_impl(struct fiber *callee)
 	cord->fiber = callee;
 	callee->flags = (callee->flags & ~FIBER_IS_READY) | FIBER_IS_RUNNING;
 
+	if (! rlist_empty(&callee->on_resume))
+		trigger_run(&callee->on_resume, NULL);
+
 	ASAN_START_SWITCH_FIBER(asan_state, 1,
 				callee->stack,
 				callee->stack_size);
@@ -672,6 +675,7 @@ fiber_join_timeout(struct fiber *fiber, double timeout)
  * but it is considered good practice to call testcancel()
  * after each yield.
  */
+#include <stdio.h>
 void
 fiber_yield(void)
 {
@@ -683,6 +687,9 @@ fiber_yield(void)
 	/** By convention, these triggers must not throw. */
 	if (! rlist_empty(&caller->on_yield))
 		trigger_run(&caller->on_yield, NULL);
+
+	if (! rlist_empty(&callee->on_resume))
+		trigger_run(&callee->on_resume, NULL);
 
 	if (cord_is_main())
 		cord_on_yield();
@@ -869,6 +876,7 @@ static void
 fiber_reset(struct fiber *fiber)
 {
 	rlist_create(&fiber->on_yield);
+	rlist_create(&fiber->on_resume);
 	rlist_create(&fiber->on_stop);
 	/*
 	 * Preserve the running flag if set. Reset might be called on the
@@ -1307,6 +1315,7 @@ fiber_destroy(struct cord *cord, struct fiber *f)
 	assert(f != &cord->sched);
 
 	trigger_destroy(&f->on_yield);
+	trigger_destroy(&f->on_resume);
 	trigger_destroy(&f->on_stop);
 	rlist_del(&f->state);
 	rlist_del(&f->link);

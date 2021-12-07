@@ -466,6 +466,27 @@ lua_fiber_run_f(MAYBE_UNUSED va_list ap)
 	return result;
 }
 
+#include "../box/box_timeout.h"
+
+int box_timeout_on_yield(struct trigger *trigger, void *event) {
+	(void)trigger;
+	(void)event;
+	reset_box_timeout();
+	return 0;
+}
+
+int box_timeout_on_resume(struct trigger *trigger, void *event) {
+	(void)trigger;
+	(void)event;
+	set_box_timeout(*(uint64_t *)trigger->data);
+	return 0;
+}
+
+struct on_resume_trigger_with_data {
+	struct trigger on_resume;
+	uint64_t data;
+};
+
 /**
  * Utility function for fiber.create and fiber.new
  */
@@ -494,6 +515,16 @@ fiber_create(struct lua_State *L)
 	 */
 	lua_pushinteger(child_L, coro_ref);
 	f->storage.lua.stack = child_L;
+	size_t size = 0;
+	struct on_resume_trigger_with_data* on_resume = region_alloc_object(
+		&f->gc, struct on_resume_trigger_with_data, &size);
+	trigger_create(&on_resume->on_resume, box_timeout_on_resume, &on_resume->data, NULL);
+	on_resume->data = 10;
+	trigger_add(&f->on_resume, &on_resume->on_resume);
+	struct trigger *on_yield = region_alloc_object(
+		&f->gc, struct trigger, &size);
+	trigger_create(on_yield, box_timeout_on_yield, NULL, NULL);
+	trigger_add(&f->on_yield, on_yield);
 	return f;
 }
 

@@ -69,6 +69,7 @@
 #include "box/lua/watcher.h"
 
 #include "mpstream/mpstream.h"
+#include <box/box_timeout.h>
 
 static uint32_t CTID_STRUCT_TXN_SAVEPOINT_PTR = 0;
 
@@ -480,6 +481,7 @@ box_lua_init(struct lua_State *L)
 	box_lua_xlog_init(L);
 	box_lua_sql_init(L);
 	box_lua_watcher_init(L);
+	box_timeout_init();
 	luaopen_net_box(L);
 	lua_pop(L, 1);
 	tarantool_lua_console_init(L);

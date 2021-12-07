@@ -39,6 +39,7 @@
 #include "rmean.h"
 #include "info/info.h"
 #include "memtx_tx.h"
+#include "box_timeout.h"
 
 /* {{{ Utilities. **********************************************/
 
@@ -455,6 +456,10 @@ iterator_create(struct iterator *it, struct index *index)
 int
 iterator_next(struct iterator *it, struct tuple **ret)
 {
+	if (check_box_timeout()) {
+		diag_set(TimedOut);
+		return -1;
+	}
 	assert(it->next != NULL);
 	/* In case of ephemeral space there is no need to check schema version */
 	if (it->space_id == 0)
