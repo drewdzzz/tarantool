@@ -40,6 +40,16 @@ extern "C" {
 
 /** \cond public */
 
+extern const double clock_nanosecond;
+extern const double clock_microsecond;
+extern const double clock_millisecond;
+extern const double clock_second;
+
+extern const uint64_t clock_nanosecond64;
+extern const uint64_t clock_microsecond64;
+extern const uint64_t clock_millisecond64;
+extern const uint64_t clock_second64;
+
 double clock_realtime(void);
 double clock_monotonic(void);
 double clock_process(void);
