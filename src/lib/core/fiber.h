@@ -44,6 +44,7 @@
 #include "salad/stailq.h"
 
 #include <coro/coro.h>
+#include "clock.h"
 
 /*
  * This constant is the same as LUA_NOREF. It should be used
@@ -555,6 +556,8 @@ struct fiber {
 #endif
 	/** Coro stack size. */
 	size_t stack_size;
+	/** Time when the fiber was called. */
+	uint64_t call_time;
 	/** Valgrind stack id. */
 	unsigned int stack_id;
 	/* A garbage-collected memory pool. */
@@ -828,6 +831,15 @@ static inline const char *
 fiber_name(struct fiber *f)
 {
 	return f->name;
+}
+
+/**
+ * Time since fiber was called.
+ */
+static inline uint64_t
+fiber_time_from_call(struct fiber *f)
+{
+	return clock_monotonic64() - f->call_time;
 }
 
 bool

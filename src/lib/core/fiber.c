@@ -375,6 +375,12 @@ fiber_stack_recycle(struct fiber *fiber);
 static void
 fiber_destroy(struct cord *cord, struct fiber *f);
 
+static inline void
+fiber_before_call(struct fiber *f)
+{
+	f->call_time = clock_monotonic64();
+}
+
 /**
  * Transfer control to callee fiber.
  */
@@ -402,6 +408,8 @@ fiber_call_impl(struct fiber *callee)
 	caller->flags &= ~FIBER_IS_RUNNING;
 	cord->fiber = callee;
 	callee->flags = (callee->flags & ~FIBER_IS_READY) | FIBER_IS_RUNNING;
+
+	fiber_before_call(callee);
 
 	ASAN_START_SWITCH_FIBER(asan_state, 1,
 				callee->stack,
@@ -697,6 +705,8 @@ fiber_yield(void)
 	caller->flags &= ~FIBER_IS_RUNNING;
 	cord->fiber = callee;
 	callee->flags = (callee->flags & ~FIBER_IS_READY) | FIBER_IS_RUNNING;
+
+	fiber_before_call(callee);
 
 	ASAN_START_SWITCH_FIBER(asan_state,
 				(caller->flags & FIBER_IS_DEAD) == 0,
@@ -1264,6 +1274,7 @@ fiber_new_ex(const char *name, const struct fiber_attr *fiber_attr,
 	fiber->fid = cord->next_fid;
 	fiber_set_name(fiber, name);
 	register_fid(fiber);
+	fiber->call_time = 0;
 	fiber->csw = 0;
 
 	cord->next_fid++;
@@ -1316,6 +1327,7 @@ fiber_destroy(struct cord *cord, struct fiber *f)
 	if (f->name != f->inline_name)
 		free(f->name);
 	f->name = NULL;
+	f->call_time = 0;
 }
 
 void

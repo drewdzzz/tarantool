@@ -229,6 +229,21 @@ fiber_wakeup_self_test()
 	footer();
 }
 
+static void
+fiber_time_from_call_test()
+{
+	header();
+	uint64_t start_time = clock_monotonic64();
+	struct fiber *newf = fiber_new_xc("nop", noop_f);
+	fiber_start(newf);
+	uint64_t elapsed_time = clock_monotonic64() - start_time;
+	uint64_t time_from_call = fiber_time_from_call(newf);
+	assert(time_from_call >= 0);
+	assert(time_from_call <= elapsed_time);
+
+	footer();
+}
+
 static int
 main_f(va_list ap)
 {
@@ -236,6 +251,7 @@ main_f(va_list ap)
 	fiber_join_test();
 	fiber_stack_test();
 	fiber_wakeup_self_test();
+	fiber_time_from_call_test();
 	ev_break(loop(), EVBREAK_ALL);
 	return 0;
 }
