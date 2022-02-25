@@ -558,6 +558,8 @@ struct fiber {
 	size_t stack_size;
 	/** Time when the fiber was called. */
 	uint64_t call_time;
+	/** Fiber's deadline timeout. */
+	uint64_t deadline_timeout;
 	/** Valgrind stack id. */
 	unsigned int stack_id;
 	/* A garbage-collected memory pool. */
@@ -732,6 +734,10 @@ struct cord {
 	struct slab_cache slabc;
 	/** The "main" fiber of this cord, the scheduler. */
 	struct fiber sched;
+	/** Default deadline timeout for new fibers. */
+	uint64_t default_deadline_timeout;
+	/** Timeout for current fiber execution. */
+	uint64_t current_fiber_deadline_timeout;
 	char name[FIBER_NAME_INLINE];
 };
 
@@ -841,6 +847,42 @@ fiber_time_from_call(struct fiber *f)
 {
 	return clock_monotonic64() - f->call_time;
 }
+
+/**
+ * Check if deadline is up for current cord.
+ */
+static inline bool
+check_deadline()
+{
+	return cord()->current_fiber_deadline_timeout > fiber_time_from_call(fiber());
+}
+
+/**
+ * Set default deadline timeout for new fibers of current cord.
+ */
+void
+set_default_deadline_timeout(uint64_t new_deadline_timeout);
+
+/**
+ * Set deadline timeout to fiber. Must be called in the thread in which the cord
+ * that manages this fiber is located.
+ */
+void
+fiber_set_deadline_timeout(struct fiber *fiber, uint64_t new_deadline_timeout);
+
+/**
+ * Increase current deadline timeout of current cord. Must be called in the thread
+ * in which the cord that manages this fiber is located.
+ */
+void
+increase_deadline_timeout(uint64_t time_added);
+
+/**
+ * Set current deadline timeout of current cord to zero which means that deadline
+ * for current fiber execution is up.
+ */
+void
+force_deadline();
 
 bool
 fiber_checkstack(void);

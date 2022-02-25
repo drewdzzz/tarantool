@@ -871,6 +871,45 @@ lbox_fiber_stall(struct lua_State *L)
 	return 0;
 }
 
+static int
+lbox_increase_deadline_timeout(struct lua_State *L)
+{
+	const uint64_t time_add = lua_tonumber(L, -1) * clock_second;
+	increase_deadline_timeout(time_add);
+	return 0;
+}
+
+static int
+lbox_check_deadline(struct lua_State *L)
+{
+	lua_pushboolean(L, check_deadline());
+	return 1;
+}
+
+static int
+lbox_set_default_deadline_timeout(struct lua_State *L)
+{
+	if (lua_gettop(L) != 1) {
+		luaL_error(L, "fiber.set_default_deadline_timeout(timeout): bad arguments");
+	}
+	double new_deadline_timeout = luaL_checknumber(L, 1) * clock_second;
+	set_default_deadline_timeout(new_deadline_timeout);
+	// cast??
+	return 0;
+}
+
+static int
+lbox_fiber_set_deadline_timeout(struct lua_State *L)
+{
+	if (lua_gettop(L) != 2) {
+		luaL_error(L, "fiber.set_deadline_timeout(id, timeout): bad arguments");
+	}
+	struct fiber *fiber = lbox_checkfiber(L, 1);
+	uint64_t new_deadline_timeout = luaL_checknumber(L, 2) * clock_second;
+	fiber_set_deadline_timeout(fiber, new_deadline_timeout);
+	return 0;
+}
+
 static const struct luaL_Reg lbox_fiber_meta [] = {
 	{"id", lbox_fiber_id},
 	{"name", lbox_fiber_name},
@@ -883,6 +922,7 @@ static const struct luaL_Reg lbox_fiber_meta [] = {
 	{"__tostring", lbox_fiber_tostring},
 	{"join", lbox_fiber_join},
 	{"set_joinable", lbox_fiber_set_joinable},
+	{"set_deadline_timeout", lbox_fiber_set_deadline_timeout},
 	{"wakeup", lbox_fiber_wakeup},
 	{"__index", lbox_fiber_index},
 	{NULL, NULL}
@@ -910,6 +950,9 @@ static const struct luaL_Reg fiberlib[] = {
 	{"new", lbox_fiber_new},
 	{"status", lbox_fiber_status},
 	{"name", lbox_fiber_name},
+	{"increase_deadline_timeout", lbox_increase_deadline_timeout},
+	{"check_deadline", lbox_check_deadline},
+	{"set_default_deadline_timeout", lbox_set_default_deadline_timeout},
 	/* Internal functions, to hide in fiber.lua. */
 	{"stall", lbox_fiber_stall},
 	{NULL, NULL}

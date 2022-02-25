@@ -379,6 +379,8 @@ static inline void
 fiber_before_call(struct fiber *f)
 {
 	f->call_time = clock_monotonic64();
+	/** Wind deadline clock. */
+	cord()->current_fiber_deadline_timeout = f->deadline_timeout;
 }
 
 /**
@@ -1275,6 +1277,7 @@ fiber_new_ex(const char *name, const struct fiber_attr *fiber_attr,
 	fiber_set_name(fiber, name);
 	register_fid(fiber);
 	fiber->call_time = 0;
+	fiber->deadline_timeout = cord->default_deadline_timeout;
 	fiber->csw = 0;
 
 	cord->next_fid++;
@@ -1328,6 +1331,7 @@ fiber_destroy(struct cord *cord, struct fiber *f)
 		free(f->name);
 	f->name = NULL;
 	f->call_time = 0;
+	f->deadline_timeout = UINT64_MAX;
 }
 
 void
@@ -1422,6 +1426,33 @@ fiber_top_disable(void)
 }
 #endif /* ENABLE_FIBER_TOP */
 
+void
+set_default_deadline_timeout(uint64_t new_deadline_timeout)
+{
+	cord()->default_deadline_timeout = new_deadline_timeout;
+}
+
+void
+fiber_set_deadline_timeout(struct fiber *fiber, uint64_t new_deadline_timeout)
+{
+	fiber->deadline_timeout = new_deadline_timeout;
+	if (fiber() == fiber) {
+		cord()->current_fiber_deadline_timeout = new_deadline_timeout;
+	}
+}
+
+void
+increase_deadline_timeout(uint64_t time_added)
+{
+	cord()->current_fiber_deadline_timeout += time_added;
+}
+
+void
+force_deadline()
+{
+	cord()->current_fiber_deadline_timeout = 0;
+}
+
 size_t
 box_region_used(void)
 {
@@ -1477,6 +1508,8 @@ cord_create(struct cord *cord, const char *name)
 	fiber_set_name(&cord->sched, "sched");
 	cord->fiber = &cord->sched;
 	cord->sched.flags |= FIBER_IS_RUNNING;
+	cord->default_deadline_timeout = UINT64_MAX;
+	cord->current_fiber_deadline_timeout = UINT64_MAX;
 
 	cord->next_fid = FIBER_ID_MAX_RESERVED + 1;
 	/*
