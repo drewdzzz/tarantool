@@ -3611,6 +3611,38 @@ on_wal_checkpoint_threshold(void)
 	gc_trigger_checkpoint();
 }
 
+static const uint32_t timeout_check_period = 1000;
+static uint32_t period = 0;
+
+/* Check periodically to see if the deadline of main cord has expired. */
+bool
+box_check_deadline()
+{
+	period = (period + 1) % timeout_check_period;
+	if (period == 0)
+		return check_deadline();
+	else
+		return true;
+}
+
+/* Force deadline of main cord on SIGURG. */
+void
+box_timeout_cb(int signum)
+{
+	(void)signum;
+	if (cord_is_main())
+		force_deadline();
+}
+
+static inline void
+box_timeout_init()
+{
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = box_timeout_cb;
+	sigaction(SIGURG, &sa, NULL);
+}
+
 void
 box_init(void)
 {
@@ -3633,6 +3665,7 @@ box_init(void)
 	sequence_init();
 	box_raft_init();
 	box_watcher_init();
+	box_timeout_init();
 }
 
 bool

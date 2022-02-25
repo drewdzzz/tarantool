@@ -108,6 +108,9 @@ box_is_configured(void);
 void
 box_atfork(void);
 
+bool
+box_check_deadline();
+
 void
 box_set_ro(void);
 

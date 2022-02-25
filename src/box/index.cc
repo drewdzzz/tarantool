@@ -456,6 +456,10 @@ int
 iterator_next(struct iterator *it, struct tuple **ret)
 {
 	assert(it->next != NULL);
+	if (!box_check_deadline()) {
+		diag_set(ClientError, ER_SPACE_ITERATION_TIMEOUT);
+		return -1;
+	}
 	/* In case of ephemeral space there is no need to check schema version */
 	if (it->space_id == 0)
 		return it->next(it, ret);

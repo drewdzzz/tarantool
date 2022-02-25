@@ -34,6 +34,7 @@
 #include "trivia/util.h"
 #include "iterator_type.h"
 #include "index_def.h"
+#include "box.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -603,12 +604,20 @@ index_def_change_requires_rebuild(struct index *index,
 static inline ssize_t
 index_size(struct index *index)
 {
+	if (!box_check_deadline()) {
+		diag_set(ClientError, ER_SPACE_ITERATION_TIMEOUT);
+		return -1;
+	}
 	return index->vtab->size(index);
 }
 
 static inline ssize_t
 index_bsize(struct index *index)
 {
+	if (!box_check_deadline()) {
+		diag_set(ClientError, ER_SPACE_ITERATION_TIMEOUT);
+		return -1;
+	}
 	return index->vtab->bsize(index);
 }
 
@@ -616,6 +625,10 @@ static inline int
 index_min(struct index *index, const char *key,
 	  uint32_t part_count, struct tuple **result)
 {
+	if (!box_check_deadline()) {
+		diag_set(ClientError, ER_SPACE_ITERATION_TIMEOUT);
+		return -1;
+	}
 	return index->vtab->min(index, key, part_count, result);
 }
 
@@ -623,12 +636,20 @@ static inline int
 index_max(struct index *index, const char *key,
 	     uint32_t part_count, struct tuple **result)
 {
+	if (!box_check_deadline()) {
+		diag_set(ClientError, ER_SPACE_ITERATION_TIMEOUT);
+		return -1;
+	}
 	return index->vtab->max(index, key, part_count, result);
 }
 
 static inline int
 index_random(struct index *index, uint32_t rnd, struct tuple **result)
 {
+	if (!box_check_deadline()) {
+		diag_set(ClientError, ER_SPACE_ITERATION_TIMEOUT);
+		return -1;
+	}
 	return index->vtab->random(index, rnd, result);
 }
 
@@ -636,6 +657,10 @@ static inline ssize_t
 index_count(struct index *index, enum iterator_type type,
 	    const char *key, uint32_t part_count)
 {
+	if (!box_check_deadline()) {
+		diag_set(ClientError, ER_SPACE_ITERATION_TIMEOUT);
+		return -1;
+	}
 	return index->vtab->count(index, type, key, part_count);
 }
 
@@ -643,6 +668,10 @@ static inline int
 index_get(struct index *index, const char *key,
 	   uint32_t part_count, struct tuple **result)
 {
+	if (!box_check_deadline()) {
+		diag_set(ClientError, ER_SPACE_ITERATION_TIMEOUT);
+		return -1;
+	}
 	return index->vtab->get(index, key, part_count, result);
 }
 
@@ -669,6 +698,10 @@ index_replace(struct index *index, struct tuple *old_tuple,
 	      struct tuple *new_tuple, enum dup_replace_mode mode,
 	      struct tuple **result, struct tuple **successor)
 {
+	if (!box_check_deadline()) {
+		diag_set(ClientError, ER_SPACE_ITERATION_TIMEOUT);
+		return -1;
+	}
 	old_tuple = index_filter_tuple(index, old_tuple);
 	new_tuple = index_filter_tuple(index, new_tuple);
 	if (old_tuple == NULL && new_tuple == NULL) {
