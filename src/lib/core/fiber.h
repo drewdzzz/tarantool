@@ -32,6 +32,7 @@
  */
 #include "trivia/config.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include "tt_pthread.h"
@@ -44,6 +45,7 @@
 #include "salad/stailq.h"
 
 #include <coro/coro.h>
+#include "clock.h"
 
 /*
  * This constant is the same as LUA_NOREF. It should be used
@@ -181,6 +183,10 @@ enum {
 	 * of fiber_pool.
 	 */
 	FIBER_IS_IDLE		= 1 << 7,
+	/**
+	 * This flag is set when fiber has custom slice.
+	 */
+	FIBER_CUSTOM_SLICE	= 1 << 8,
 	FIBER_DEFAULT_FLAGS = FIBER_IS_CANCELLABLE
 };
 
@@ -534,6 +540,16 @@ struct credentials;
 struct lua_State;
 struct ipc_wait_pad;
 
+/**
+ * Warning and error slices.
+ */
+struct fiber_slice {
+	/** Warning slice. */
+	double warn;
+	/** Error slice. */
+	double err;
+};
+
 struct fiber {
 	coro_context ctx;
 	/** Coro stack slab. */
@@ -555,6 +571,8 @@ struct fiber {
 #endif
 	/** Coro stack size. */
 	size_t stack_size;
+	/** Fiber's custom slice if fiber has it, zero otherwise. */
+	struct fiber_slice custom_slice;
 	/** Valgrind stack id. */
 	unsigned int stack_id;
 	/* A garbage-collected memory pool. */
@@ -744,6 +762,12 @@ struct cord {
 	struct slab_cache slabc;
 	/** The "main" fiber of this cord, the scheduler. */
 	struct fiber sched;
+	/** Time when the current fiber was called. */
+	double call_time;
+	/** Default slice for fibers without custom slice in seconds. */
+	struct fiber_slice default_slice;
+	/** Slice for current fiber execution in seconds. */
+	struct fiber_slice current_slice;
 	char name[FIBER_NAME_INLINE];
 };
 
@@ -853,6 +877,60 @@ static inline const char *
 fiber_name(struct fiber *f)
 {
 	return f->name;
+}
+
+/**
+ * Time since fiber was called.
+ */
+static inline double
+fiber_time_from_call(struct cord *cord)
+{
+	return clock_monotonic() - cord->call_time;
+}
+
+/**
+ * Set default slice for fibers without custom slice for current cord.
+ */
+static inline void
+fiber_set_default_slice(struct fiber_slice slice)
+{
+	cord()->default_slice = slice;
+	if ((fiber()->flags & FIBER_CUSTOM_SLICE) == 0)
+		cord()->current_slice = slice;
+}
+
+/**
+ * Set slice to fiber. Must be called in the thread in which the cord
+ * that manages this fiber is located.
+ * Error slice must be greater than 0.
+ */
+static inline void
+fiber_set_slice(struct fiber *fib, struct fiber_slice slice)
+{
+	fib->custom_slice = slice;
+	fib->flags |= FIBER_CUSTOM_SLICE;
+	if (fiber() == fib)
+		cord()->current_slice = slice;
+}
+
+/**
+ * Check if slice is over for current cord.
+ */
+static inline int
+fiber_check_slice(void)
+{
+	double time_from_call = fiber_time_from_call(cord());
+	struct fiber_slice slice = cord()->current_slice;
+	if (unlikely(slice.warn < time_from_call)) {
+		say_warn("fiber has not yield for more than %.3lf seconds",
+			 slice.warn);
+		cord()->current_slice.warn = TIMEOUT_INFINITY;
+	}
+	if (unlikely(slice.err < time_from_call)) {
+		diag_set(FiberSliceIsExceeded);
+		return -1;
+	}
+	return 0;
 }
 
 bool

@@ -810,6 +810,111 @@ lbox_fiber_stall(struct lua_State *L)
 	return 0;
 }
 
+/* Increase deadline timeout of currently running fiber. */
+static int
+lbox_extend_slice(struct lua_State *L)
+{
+	if (lua_gettop(L) != 2) {
+		luaL_error(L, "fiber.extend_slice(fib_id, slice): "
+			      "bad arguments");
+	}
+	struct fiber *fiber = lbox_checkfiber(L, 1);
+	if (fiber != fiber()) {
+		luaL_error(L, "fiber is not running");
+	}
+	struct fiber_slice slice;
+	if (lua_istable(L, 2)) {
+		lua_getfield(L, 2, "warn");
+		slice.warn = luaL_checknumber(L, -1);
+		lua_getfield(L, 2, "err");
+		slice.err = luaL_checknumber(L, -1);
+		lua_pop(L, 2);
+	} else if (lua_isnumber(L, 2)) {
+		slice.warn = INFINITY;
+		slice.err = lua_tonumber(L, 2);
+	} else {
+		luaL_error(L, "slice must be a table or a number");
+		return 0;
+	}
+	if (slice.warn <= 0 || slice.err <= 0)
+		luaL_error(L, "slice must be greater than 0");
+	struct fiber_slice current_slice = cord()->current_slice;
+	slice.warn += current_slice.warn;
+	slice.err += current_slice.err;
+	cord()->current_slice = slice;
+	return 0;
+}
+
+/**
+ * Raise an error if current fiber's slice is over.
+ */
+static int
+lbox_check_slice(struct lua_State *L)
+{
+	if (lua_gettop(L) != 0)
+		luaL_error(L, "fiber.check_slice(): bad arguments");
+	if (fiber_check_slice() != 0)
+		luaT_error(L);
+	return 0;
+}
+
+/* Set default slice for fibers without custom slice. */
+static int
+lbox_set_default_slice(struct lua_State *L)
+{
+	if (lua_gettop(L) != 1) {
+		luaL_error(L, "fiber.set_default_slice(slice): "
+			      "bad arguments");
+	}
+	struct fiber_slice slice;
+	if (lua_istable(L, 1)) {
+		lua_getfield(L, 1, "warn");
+		slice.warn = luaL_checknumber(L, -1);
+		lua_getfield(L, 1, "err");
+		slice.err = luaL_checknumber(L, -1);
+		lua_pop(L, 2);
+	} else if (lua_isnumber(L, 1)) {
+		slice.warn = INFINITY;
+		slice.err = lua_tonumber(L, 1);
+	} else {
+		luaL_error(L, "slice must be a table or a number");
+		return 0;
+	}
+	if (slice.warn <= 0 || slice.err <= 0)
+		luaL_error(L, "slice must be greater than 0");
+	fiber_set_default_slice(slice);
+	return 0;
+}
+
+/* Set slice for a fiber passed through the argument. */
+static int
+lbox_fiber_set_slice(struct lua_State *L)
+{
+	if (lua_gettop(L) != 2) {
+		luaL_error(L, "fiber.set_slice(fib_id, timeout): "
+			      "bad arguments");
+	}
+	struct fiber *fiber = lbox_checkfiber(L, 1);
+	struct fiber_slice slice;
+	if (lua_istable(L, 2)) {
+		lua_getfield(L, 2, "warn");
+		slice.warn = luaL_checknumber(L, -1);
+		lua_getfield(L, 2, "err");
+		slice.err = luaL_checknumber(L, -1);
+		lua_pop(L, 2);
+	} else if (lua_isnumber(L, 2)) {
+		slice.warn = INFINITY;
+		slice.err = lua_tonumber(L, 2);
+	} else {
+		luaL_error(L, "slice must be a table or a number");
+		return 0;
+	}
+	if (slice.warn <= 0 || slice.err <= 0)
+		luaL_error(L, "slice must be greater than 0");
+	fiber_set_slice(fiber, slice);
+	return 0;
+}
+
 static const struct luaL_Reg lbox_fiber_meta [] = {
 	{"id", lbox_fiber_id},
 	{"name", lbox_fiber_name},
@@ -822,6 +927,8 @@ static const struct luaL_Reg lbox_fiber_meta [] = {
 	{"__tostring", lbox_fiber_tostring},
 	{"join", lbox_fiber_join},
 	{"set_joinable", lbox_fiber_set_joinable},
+	{"set_slice", lbox_fiber_set_slice},
+	{"extend_slice", lbox_extend_slice},
 	{"wakeup", lbox_fiber_wakeup},
 	{"__index", lbox_fiber_index},
 	{NULL, NULL}
@@ -853,6 +960,8 @@ static const struct luaL_Reg fiberlib[] = {
 	{"new", lbox_fiber_new},
 	{"status", lbox_fiber_status},
 	{"name", lbox_fiber_name},
+	{"check_slice", lbox_check_slice},
+	{"set_default_slice", lbox_set_default_slice},
 	/* Internal functions, to hide in fiber.lua. */
 	{"stall", lbox_fiber_stall},
 	{NULL, NULL}

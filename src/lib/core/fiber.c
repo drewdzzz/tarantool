@@ -45,6 +45,9 @@
 
 extern void cord_on_yield(void);
 
+static struct fiber_slice zero_slice = {.warn = 0.0, .err = 0.0};
+static struct fiber_slice default_slice = {.warn = 0.1, .err = 1.0};
+
 #if ENABLE_FIBER_TOP
 #include <x86intrin.h> /* __rdtscp() */
 
@@ -386,6 +389,17 @@ fiber_delete(struct cord *cord, struct fiber *f);
 static void
 cord_add_garbage(struct cord *cord, struct fiber *f);
 
+/* Reset current fiber slice. */
+static inline void
+fiber_reset_current_slice(struct fiber *f)
+{
+	cord()->call_time = clock_monotonic();
+	struct fiber_slice new_slice = cord()->default_slice;
+	if ((f->flags & FIBER_CUSTOM_SLICE) != 0)
+		new_slice = f->custom_slice;
+	cord()->current_slice = new_slice;
+}
+
 /**
  * Transfer control to callee fiber.
  */
@@ -413,6 +427,8 @@ fiber_call_impl(struct fiber *callee)
 	caller->flags &= ~FIBER_IS_RUNNING;
 	cord->fiber = callee;
 	callee->flags = (callee->flags & ~FIBER_IS_READY) | FIBER_IS_RUNNING;
+
+	fiber_reset_current_slice(callee);
 
 	ASAN_START_SWITCH_FIBER(asan_state, 1,
 				callee->stack,
@@ -716,6 +732,8 @@ fiber_yield(void)
 	caller->flags &= ~FIBER_IS_RUNNING;
 	cord->fiber = callee;
 	callee->flags = (callee->flags & ~FIBER_IS_READY) | FIBER_IS_RUNNING;
+
+	fiber_reset_current_slice(callee);
 
 	ASAN_START_SWITCH_FIBER(asan_state,
 				(caller->flags & FIBER_IS_DEAD) == 0,
@@ -1280,6 +1298,7 @@ fiber_new_ex(const char *name, const struct fiber_attr *fiber_attr,
 	fiber->fid = cord->next_fid;
 	fiber_set_name(fiber, name);
 	register_fid(fiber);
+	fiber->custom_slice = zero_slice;
 	fiber->csw = 0;
 #ifdef ENABLE_BACKTRACE
 	fiber->parent_bt = NULL;
@@ -1509,6 +1528,8 @@ cord_create(struct cord *cord, const char *name)
 	fiber_set_name(&cord->sched, "sched");
 	cord->fiber = &cord->sched;
 	cord->sched.flags = FIBER_IS_RUNNING;
+	cord->sched.custom_slice = zero_slice;
+	cord->default_slice = default_slice;
 
 	cord->next_fid = FIBER_ID_MAX_RESERVED + 1;
 	/*
