@@ -40,6 +40,7 @@
 #include "rmean.h"
 #include "info/info.h"
 #include "memtx_tx.h"
+#include "box.h"
 
 struct rlist box_on_select = RLIST_HEAD_INITIALIZER(box_on_select);
 
@@ -233,6 +234,8 @@ box_index_get(uint32_t space_id, uint32_t index_id, const char *key,
 	      const char *key_end, box_tuple_t **result)
 {
 	assert(key != NULL && key_end != NULL && result != NULL);
+	if (box_check_slice() != 0)
+		return -1;
 	mp_tuple_assert(key, key_end);
 	struct space *space;
 	struct index *index;
@@ -425,6 +428,8 @@ int
 box_iterator_next(box_iterator_t *itr, box_tuple_t **result)
 {
 	assert(result != NULL);
+	if (box_check_slice() != 0)
+		return -1;
 	struct space *space = iterator_space(itr);
 	if (space == NULL) {
 		*result = NULL;

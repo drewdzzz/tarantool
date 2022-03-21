@@ -2467,6 +2467,8 @@ box_process1(struct request *request, box_tuple_t **result)
 	struct space *space = space_cache_find(request->space_id);
 	if (space == NULL || box_check_process_rw(space) != 0)
 		return -1;
+	if (box_check_slice() != 0)
+		return -1;
 	return box_process_rw(request, space, result);
 }
 
@@ -2526,6 +2528,8 @@ box_select(uint32_t space_id, uint32_t index_id,
 	struct tuple *tuple;
 	port_c_create(port);
 	while (found < limit) {
+		if (box_check_slice() != 0)
+			return -1;
 		struct result_processor res_proc;
 		result_process_prepare(&res_proc, space);
 		rc = iterator_next(it, &tuple);
@@ -3799,6 +3803,18 @@ on_wal_checkpoint_threshold(void)
 {
 	say_info("WAL threshold exceeded, triggering checkpoint");
 	gc_trigger_checkpoint();
+}
+
+int
+box_check_slice(void)
+{
+	static const uint32_t timeout_check_period = 1000;
+	static uint32_t period;
+	period = (period + 1) % timeout_check_period;
+	if (period == 0)
+		return fiber_check_slice();
+	else
+		return 0;
 }
 
 void

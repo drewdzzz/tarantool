@@ -108,6 +108,10 @@ box_is_configured(void);
 void
 box_atfork(void);
 
+/* Check periodically if the slice of main cord has expired. */
+int
+box_check_slice(void);
+
 void
 box_set_ro(void);
 
