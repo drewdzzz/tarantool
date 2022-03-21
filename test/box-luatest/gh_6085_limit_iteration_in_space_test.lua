@@ -90,3 +90,39 @@ g.test_limit_replace = function()
         check_fiber_slice(endless_replace_func, timeout, delta)
     end)
 end
+
+g.before_test('test_limit_on_sigurg', function()
+    g.server = server:new({
+        alias = 'default',
+    })
+    g.server:start()
+end)
+
+g.test_limit_on_sigurg = function()
+    local pid = g.server:eval('return box.info.pid')
+    local os = require('os')
+    local clock = require('clock')
+
+    g.server:exec(function()
+        local fiber = require('fiber')
+
+        local s = box.schema.create_space('tester')
+        s:create_index('pk')
+        for i = 1, 1000 do
+            s:insert{i}
+        end
+        local timeout = 10
+        fiber.self():set_slice(timeout)
+    end)
+
+    local start_time = clock.monotonic()
+    local future = g.server.net_box:eval('while true do box.space.tester:select{} end', {}, {is_async=true})
+    -- Wait while fiber will be waken up.
+    future:wait_result(2)
+    -- Send SIGURG
+    os.execute('kill -URG ' .. tonumber(pid))
+    future:wait_result(8)
+    local end_time = clock.monotonic()
+    -- Must end before deadline is up.
+    t.assert(end_time - start_time < 4)
+end

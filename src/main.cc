@@ -205,6 +205,14 @@ signal_sigwinch_cb(ev_loop *loop, struct ev_signal *w, int revents)
 		rl_resize_terminal();
 }
 
+void
+signal_sigurg_cb(int signum)
+{
+	(void)signum;
+	/* Reset fiber slice to limit iteration in space. */
+	cord()->current_slice = {TIMEOUT_INFINITY, 0};
+}
+
 static void
 signal_free(void)
 {
@@ -241,6 +249,15 @@ signal_reset(void)
 	sigfillset(&sigset);
 	if (sigprocmask(SIG_UNBLOCK, &sigset, NULL) == -1)
 		say_syserror("sigprocmask");
+
+	/*
+	 * Block SIGURG on non-main threads so that
+	 * it is delivered only to the main one.
+	 */
+	sigemptyset(&sigset);
+	sigaddset(&sigset, SIGURG);
+	if (pthread_sigmask(SIG_BLOCK, &sigset, NULL) == -1)
+		say_syserror("sigprocmask");
 }
 
 static void
@@ -263,6 +280,17 @@ signal_init(void)
 	sigemptyset(&sa.sa_mask);
 
 	if (sigaction(SIGPIPE, &sa, 0) == -1)
+		panic_syserror("sigaction");
+
+	/* Unblock SIGURG on main thread. */
+	sigset_t sigset;
+	sigemptyset(&sigset);
+	sigaddset(&sigset, SIGURG);
+	if (pthread_sigmask(SIG_UNBLOCK, &sigset, NULL) == -1)
+		say_syserror("pthread_sigmask");
+
+	sa.sa_handler = signal_sigurg_cb;
+	if (sigaction(SIGURG, &sa, NULL) == -1)
 		panic_syserror("sigaction");
 
 	crash_signal_init();
