@@ -542,6 +542,12 @@ box_session_push(const char *data, const char *data_end);
 /** \endcond public */
 
 /**
+ * Check if space is writable.
+ */
+int
+box_check_process_rw(struct space *space);
+
+/**
  * Used to be entry point to the
  * Box: callbacks into the request processor.
  * These are function pointers since they can

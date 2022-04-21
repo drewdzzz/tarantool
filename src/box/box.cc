@@ -2433,12 +2433,10 @@ box_index_id_by_name(uint32_t space_id, const char *name, uint32_t len)
 /** \endcond public */
 
 int
-box_process1(struct request *request, box_tuple_t **result)
+box_check_process_rw(struct space *space)
 {
+	assert(space != NULL);
 	/* Allow to write to temporary spaces in read-only mode. */
-	struct space *space = space_cache_find(request->space_id);
-	if (space == NULL)
-		return -1;
 	if (!space_is_temporary(space) &&
 	    space_group_id(space) != GROUP_LOCAL &&
 	    box_check_writable() != 0)
@@ -2452,15 +2450,23 @@ box_process1(struct request *request, box_tuple_t **result)
 		 * So reject any attempts to write into these spaces.
 		 */
 		if (memtx_space_is_recovering(space)) {
-			diag_set(ClientError, ER_UNSUPPORTED, "Snapshot recovery",
-				"write requests, use "
-				"box.ctl.is_recovery_finished() "
-				"to check that snapshot recovery was completed");
+			diag_set(ClientError, ER_UNSUPPORTED,
+				 "Snapshot recovery", "write requests, use "
+				 "box.ctl.is_recovery_finished() to check "
+				 "that snapshot recovery was completed");
 			diag_log();
 			return -1;
 		}
 	}
+	return 0;
+}
 
+int
+box_process1(struct request *request, box_tuple_t **result)
+{
+	struct space *space = space_cache_find(request->space_id);
+	if (space == NULL || box_check_process_rw(space) != 0)
+		return -1;
 	return box_process_rw(request, space, result);
 }
 
