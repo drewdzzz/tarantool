@@ -8,4 +8,5 @@ box.cfg{
     checkpoint_count    = 100
 }
 
+require('fiber').set_default_slice(10000)
 require('console').listen(os.getenv('ADMIN'))

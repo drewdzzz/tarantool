@@ -6,5 +6,6 @@ box.cfg{
     memtx_memory = 214748364,
 }
 
+require('fiber').set_default_slice(10000)
 require('console').listen(os.getenv('ADMIN'))
 box.schema.user.grant('guest', 'read,write,execute', 'universe')

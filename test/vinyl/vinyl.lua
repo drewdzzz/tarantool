@@ -15,4 +15,5 @@ box.cfg {
     vinyl_max_tuple_size = 1024 * 1024 * 6,
 }
 
+require('fiber').set_default_slice(10000)
 require('console').listen(os.getenv('ADMIN'))

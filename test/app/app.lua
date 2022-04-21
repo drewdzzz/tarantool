@@ -7,4 +7,5 @@ box.cfg{
     wal_max_size        = 2500
 }
 
+require('fiber').set_default_slice(10000)
 require('console').listen(os.getenv('ADMIN'))

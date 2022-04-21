@@ -15,4 +15,5 @@ box.cfg{
     memtx_allocator      = os.getenv("MEMTX_ALLOCATOR")
 }
 
+require('fiber').set_default_slice(10000)
 require('console').listen(os.getenv('ADMIN'))

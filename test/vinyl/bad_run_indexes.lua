@@ -8,4 +8,5 @@ box.cfg {
     force_recovery = true,
 }
 
+require('fiber').set_default_slice(10000)
 require('console').listen(os.getenv('ADMIN'))

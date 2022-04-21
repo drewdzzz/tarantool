@@ -30,6 +30,7 @@ local function box_cfg(cfg)
 end
 
 box.cfg(box_cfg())
+require('fiber').set_default_slice(10000)
 box.schema.user.grant('guest', 'super', nil, nil, {if_not_exists = true})
 
 -- The Server:start function unblocks only when this variable becomes true.

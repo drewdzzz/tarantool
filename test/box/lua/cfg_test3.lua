@@ -7,5 +7,6 @@ box.cfg{
     vinyl_write_threads = 10,
 }
 
+require('fiber').set_default_slice(10000)
 require('console').listen(os.getenv('ADMIN'))
 box.schema.user.grant('guest', 'read,write,execute', 'universe')

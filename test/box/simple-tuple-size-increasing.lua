@@ -8,3 +8,4 @@ box.cfg{
     wal_mode = 'none'
 }
 
+require('fiber').set_default_slice(10000)

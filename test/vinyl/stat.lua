@@ -5,4 +5,5 @@ box.cfg{
     vinyl_defer_deletes = true,
 }
 
+require('fiber').set_default_slice(10000)
 require('console').listen(os.getenv('ADMIN'))
