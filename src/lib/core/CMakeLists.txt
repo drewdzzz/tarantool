@@ -1,4 +1,5 @@
 set(core_sources
+    clock_low_res.c
     diag.c
     crash.c
     say.c

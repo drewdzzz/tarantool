@@ -241,6 +241,9 @@ signal_reset(void)
 	    sigaction(SIGHUP, &sa, NULL) == -1 ||
 	    sigaction(SIGWINCH, &sa, NULL) == -1)
 		say_syserror("sigaction");
+	sa.sa_handler = SIG_IGN;
+	if (sigaction(SIGALRM, &sa, NULL) == -1)
+		say_syserror("sigaction");
 
 	crash_signal_reset();
 
@@ -292,6 +295,18 @@ signal_init(void)
 	sa.sa_handler = signal_sigurg_cb;
 	if (sigaction(SIGURG, &sa, NULL) == -1)
 		panic_syserror("sigaction");
+
+	sa.sa_handler = clock_low_res_clock_tick;
+	if (sigaction(SIGALRM, &sa, NULL) == -1)
+		panic_syserror("sigaction");
+
+	struct itimerval timer;
+	timer.it_interval.tv_usec = 100000;
+	timer.it_interval.tv_sec = 0;
+	timer.it_value.tv_usec = 100000;
+	timer.it_value.tv_sec = 0;
+	if (setitimer(ITIMER_REAL, &timer, NULL) == -1)
+		panic_syserror("setitimer");
 
 	crash_signal_init();
 

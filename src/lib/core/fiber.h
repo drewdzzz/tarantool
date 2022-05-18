@@ -46,6 +46,7 @@
 
 #include <coro/coro.h>
 #include "clock.h"
+#include "clock_low_res.h"
 
 /*
  * This constant is the same as LUA_NOREF. It should be used
@@ -879,13 +880,19 @@ fiber_name(struct fiber *f)
 	return f->name;
 }
 
+void
+clock_low_res_clock_tick(int signum);
+
+double
+clock_low_res_time(void);
+
 /**
  * Time since fiber was called.
  */
 static inline double
 fiber_time_from_call(struct cord *cord)
 {
-	return clock_monotonic() - cord->call_time;
+	return clock_low_res_time() - cord->call_time;
 }
 
 /**

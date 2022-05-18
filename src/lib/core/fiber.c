@@ -393,7 +393,7 @@ cord_add_garbage(struct cord *cord, struct fiber *f);
 static inline void
 fiber_reset_current_slice(struct fiber *f)
 {
-	cord()->call_time = clock_monotonic();
+	cord()->call_time = clock_low_res_time();
 	struct fiber_slice new_slice = cord()->default_slice;
 	if ((f->flags & FIBER_CUSTOM_SLICE) != 0)
 		new_slice = f->custom_slice;
