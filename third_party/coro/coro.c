@@ -645,7 +645,14 @@ coro_create (coro_context *ctx, coro_func coro, void *arg, void *sptr, size_t ss
       pthread_attr_setstack (&attr, sptr, (size_t)ssize);
 #endif
       pthread_attr_setscope (&attr, PTHREAD_SCOPE_PROCESS);
+
+      sigset_t set, oldset;
+      sigfillset(&set);
+      if (pthread_sigmask(SIG_BLOCK, &set, &oldset) != 0) {
+	      panic("cannot block signal in coro");
+      }
       pthread_create (&ctx->id, &attr, coro_init, &args);
+      pthread_sigmask(SIG_SETMASK, &oldset, NULL);
 
       coro_transfer (args.main, args.self);
     }

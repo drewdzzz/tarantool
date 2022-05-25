@@ -241,7 +241,8 @@ signal_reset(void)
 	/* Unblock any signals blocked by libev. */
 	sigset_t sigset;
 	sigfillset(&sigset);
-	if (sigprocmask(SIG_UNBLOCK, &sigset, NULL) == -1)
+	sigdelset(&sigset, SIGALRM);
+	if (pthread_sigmask(SIG_UNBLOCK, &sigset, NULL) == -1)
 		say_syserror("sigprocmask");
 }
 
@@ -718,28 +719,42 @@ main(int argc, char **argv)
 	}
 
 	crash_init(tarantool_bin);
+	say_warn("Crash inited");
 
 	random_init();
+	say_warn("Random inited");
 
 	crc32_init();
 	memory_init();
+	say_warn("Memory inited");
 
 	main_argc = argc;
 	main_argv = argv;
 
 	exception_init();
+	say_warn("Exception inited");
 
 	fiber_init(fiber_cxx_invoke);
+	say_warn("Fiber inited");
 	popen_init();
+	say_warn("Popen inited");
 	coio_init();
+	say_warn("Coio inited");
 	coio_enable();
+	say_warn("Crash enabled");
 	signal_init();
+	say_warn("Signal inited");
 	cbus_init();
+	say_warn("Cbus inited");
 	coll_init();
+	say_warn("Coll inited");
 	memtx_tx_manager_init();
 	module_init();
+	say_warn("Module inited");
 	ssl_init();
+	say_warn("SSL inited");
 	systemd_init();
+	say_warn("Systemd inited");
 
 	const int override_cert_paths_env_vars = 0;
 	int res = tnt_ssl_cert_paths_discover(override_cert_paths_env_vars);

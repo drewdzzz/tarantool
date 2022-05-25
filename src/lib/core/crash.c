@@ -397,7 +397,7 @@ crash_report_feedback_daemon(struct crash_info *cinfo)
 	};
 
 	extern char **environ;
-	int rc = posix_spawn(NULL, exec_argv[0], NULL, NULL, exec_argv, environ);
+	int rc = 0;//posix_spawn(NULL, exec_argv[0], NULL, NULL, exec_argv, environ);
 	if (rc != 0) {
 		pr_crit("posix_spawn with "
 			"exec(%s,[%s,%s,%s,%s,%s,%s,%s]) failed: %s", exec_argv[0],
@@ -529,6 +529,7 @@ crash_signal_cb(int signo, siginfo_t *siginfo, void *context)
 		.sa_handler = SIG_DFL,
 	};
 	sigemptyset(&sa.sa_mask);
+	sigaddset(&sa.sa_mask, SIGABRT);
 	sigaction(SIGABRT, &sa, NULL);
 	abort();
 }

@@ -9,14 +9,15 @@
 #include <pthread.h>
 #include "clock.h"
 #include "clock_lowres.h"
+#include "fiber.h"
 
 /**
  * Granularity in seconds.
  */
 
 static const struct timeval LOW_RES_GRANULARITY = {
-	.tv_sec = 0,
-	.tv_usec = 10 * 1e3,
+	.tv_sec = 10,
+	.tv_usec = 0,
 };
 
 double low_res_monotonic_clock = 0.0;
@@ -28,16 +29,33 @@ pthread_t owner;
 bool
 clock_lowres_thread_is_owner(void)
 {
-	return pthread_self() == owner;
+	return cord_is_main();
 }
 
 #endif /* NDEBUG */
+
+#include <execinfo.h>
 
 /** A tick of low_res_clock, SIGALRM handler. */
 static void
 clock_monotonic_lowres_tick(int signum)
 {
 	(void)signum;
+	if (!clock_lowres_thread_is_owner()) {
+		say_error(
+			"cord handled: %s, cord pthread_t: %llx, pthread_self: %llx",
+			cord_name(cord()), (uint64_t)cord()->id,
+			(uint64_t)pthread_self());
+		void *array[10];
+		size_t size;
+
+		// get void*'s for all entries on the stack
+		size = backtrace(array, 10);
+
+		// print out all the frames to stderr
+		backtrace_symbols_fd(array, size, STDERR_FILENO);
+		exit(1);
+	}
 	assert(clock_lowres_thread_is_owner());
 	low_res_monotonic_clock = clock_monotonic();
 }
@@ -46,6 +64,7 @@ void
 clock_lowres_signal_init(void)
 {
 	owner = pthread_self();
+	assert(cord_is_main());
 	low_res_monotonic_clock = clock_monotonic();
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));

@@ -33,11 +33,6 @@
 #endif
 
 #include <pthread.h>
-#define sigset_t int
-#define sigfillset(a)
-#define pthread_sigmask(a,b,c)
-#define sigaddset(a,b)
-#define sigemptyset(s)
 
 typedef pthread_mutex_t xmutex_t;
 #define X_MUTEX_INIT           PTHREAD_MUTEX_INITIALIZER
@@ -56,22 +51,6 @@ typedef pthread_cond_t xcond_t;
 typedef pthread_t xthread_t;
 #define X_THREAD_PROC(name) static void *name (void *thr_arg)
 #define X_THREAD_ATFORK(a,b,c)
-
-static int
-xthread_create (xthread_t *tid, void *(*proc)(void *), void *arg)
-{
-  int retval;
-  pthread_attr_t attr;
-
-  pthread_attr_init (&attr);
-  pthread_attr_setdetachstate (&attr, PTHREAD_CREATE_DETACHED);
-
-  retval = pthread_create (tid, &attr, proc, arg) == 0;
-
-  pthread_attr_destroy (&attr);
-
-  return retval;
-}
 
 #define respipe_read(a,b,c)  PerlSock_recv ((a), (b), (c), 0)
 #define respipe_write(a,b,c) send ((a), (b), (c), 0)
@@ -156,7 +135,8 @@ xthread_create (xthread_t *tid, void *(*proc)(void *), void *arg)
 
   sigfillset (&fullsigset);
 
-  pthread_sigmask (SIG_SETMASK, &fullsigset, &oldsigset);
+  if (pthread_sigmask (SIG_BLOCK, &fullsigset, &oldsigset) != 0)
+	  panic("cannot block signals in coio xthread_create");
   retval = pthread_create (tid, &attr, proc, arg) == 0;
   pthread_sigmask (SIG_SETMASK, &oldsigset, 0);
 

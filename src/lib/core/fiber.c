@@ -1579,6 +1579,7 @@ cord_destroy(struct cord *cord)
 	if (cord->sched.name != cord->sched.inline_name)
 		free(cord->sched.name);
 	slab_cache_destroy(&cord->slabc);
+	TRASH(cord->name);
 }
 
 struct cord_thread_arg

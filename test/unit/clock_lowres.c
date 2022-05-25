@@ -4,7 +4,7 @@
 #include "clock_lowres.h"
 #include "clock.h"
 
-#define CLOCK_LOWRES_RESOLUTION 0.03
+#define CLOCK_LOWRES_RESOLUTION 0.05
 #define TEST_LEN 1
 
 int

@@ -107,14 +107,21 @@ coio_done_poll_cb(void *ptr)
 	(void)ptr;
 }
 
+#include <signal.h>
+
 static int
 coio_on_start(void *data)
 {
+	sigset_t fullsigset;
+	sigfillset (&fullsigset);
+	if (pthread_sigmask (SIG_BLOCK, &fullsigset, NULL) != 0)
+		panic("cannot block signals in coio xthread_create");
 	(void) data;
 	struct cord *cord = (struct cord *)calloc(sizeof(struct cord), 1);
 	if (!cord)
 		return -1;
 	cord_create(cord, "coio");
+	say_error("coio cord with id %llx created", (unsigned long long)pthread_self());
 	return 0;
 }
 
@@ -124,6 +131,7 @@ coio_on_stop(void *data)
 	(void) data;
 	cord_destroy(cord());
 	free(cord());
+	say_error("coio cord with id %llx destroyed", (unsigned long long)pthread_self());
 	return 0;
 }
 

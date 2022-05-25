@@ -962,6 +962,8 @@ get_envp(struct popen_opts *opts)
 	return opts->env;
 }
 
+#include "clock_lowres.h"
+
 /**
  * Reset signals to default before executing a program.
  *
@@ -991,9 +993,12 @@ signal_reset(void)
 		_exit(errno);
 	}
 
+	clock_lowres_signal_reset();
+
 	/* Unblock any signals blocked by libev */
 	sigfillset(&sigset);
-	if (sigprocmask(SIG_UNBLOCK, &sigset, NULL) == -1) {
+	sigdelset(&sigset, SIGALRM);
+	if (pthread_sigmask(SIG_UNBLOCK, &sigset, NULL) == -1) {
 		say_error("child: SIG_UNBLOCK failed");
 		_exit(errno);
 	}

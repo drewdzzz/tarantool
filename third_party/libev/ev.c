@@ -4649,8 +4649,9 @@ ev_signal_start (EV_P_ ev_signal *w) EV_NOEXCEPT
     {
       /* TODO: check .head */
       sigaddset (&sigfd_set, w->signum);
-      sigprocmask (SIG_BLOCK, &sigfd_set, 0);
-
+      assert(sigismember(&sigfd_set, SIGALRM) == 0);
+      pthread_sigmask (SIG_BLOCK, &sigfd_set, 0)
+      
       signalfd (sigfd, &sigfd_set, 0);
     }
 #endif
@@ -4681,7 +4682,8 @@ ev_signal_start (EV_P_ ev_signal *w) EV_NOEXCEPT
           {
             sigemptyset (&sa.sa_mask);
             sigaddset (&sa.sa_mask, w->signum);
-            sigprocmask (SIG_UNBLOCK, &sa.sa_mask, 0);
+	    assert(w->signum != SIGALRM);
+            pthread_sigmask (SIG_UNBLOCK, &sa.sa_mask, 0);
           }
 #endif
       }
@@ -4715,9 +4717,10 @@ ev_signal_stop (EV_P_ ev_signal *w) EV_NOEXCEPT
           sigemptyset (&ss);
           sigaddset (&ss, w->signum);
           sigdelset (&sigfd_set, w->signum);
-
+	  assert(sigismember(&sigfd_set, SIGALRM) == 0);
           signalfd (sigfd, &sigfd_set, 0);
-          sigprocmask (SIG_UNBLOCK, &ss, 0);
+          pthread_sigmask (SIG_UNBLOCK, &ss, 0);
+	  assert(w->signum != SIGALRM);
         }
       else
 #endif
