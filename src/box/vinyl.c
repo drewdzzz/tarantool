@@ -3709,7 +3709,8 @@ vinyl_iterator_free(struct iterator *base)
 
 static struct iterator *
 vinyl_index_create_iterator(struct index *base, enum iterator_type type,
-			    const char *key, uint32_t part_count)
+			    const char *key, uint32_t part_count,
+			    const char *after)
 {
 	struct vy_lsm *lsm = vy_lsm(base);
 	struct vy_env *env = vy_env(base->engine);
@@ -3717,6 +3718,10 @@ vinyl_index_create_iterator(struct index *base, enum iterator_type type,
 	if (type > ITER_GT) {
 		diag_set(UnsupportedIndexFeature, base->def,
 			 "requested iterator type");
+		return NULL;
+	}
+	if (unlikely(after != NULL)) {
+		diag_set(UnsupportedIndexFeature, base->def, "pagination");
 		return NULL;
 	}
 

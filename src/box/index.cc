@@ -413,7 +413,7 @@ box_index_iterator(uint32_t space_id, uint32_t index_id, int type,
 	if (txn_begin_ro_stmt(space, &txn, &svp) != 0)
 		return NULL;
 	struct iterator *it = index_create_iterator(index, itype,
-						    key, part_count);
+						    key, part_count, NULL);
 	if (it == NULL) {
 		txn_rollback_stmt(txn);
 		return NULL;
@@ -682,7 +682,7 @@ generic_index_min(struct index *index, const char *key,
 		  uint32_t part_count, struct tuple **result)
 {
 	struct iterator *it = index_create_iterator(index, ITER_EQ,
-						    key, part_count);
+						    key, part_count, NULL);
 	if (it == NULL)
 		return -1;
 	int rc = iterator_next(it, result);
@@ -695,7 +695,7 @@ generic_index_max(struct index *index, const char *key,
 		  uint32_t part_count, struct tuple **result)
 {
 	struct iterator *it = index_create_iterator(index, ITER_REQ,
-						    key, part_count);
+						    key, part_count, NULL);
 	if (it == NULL)
 		return -1;
 	int rc = iterator_next(it, result);
@@ -717,7 +717,7 @@ generic_index_count(struct index *index, enum iterator_type type,
 		    const char *key, uint32_t part_count)
 {
 	struct iterator *it = index_create_iterator(index, type,
-						    key, part_count);
+						    key, part_count, NULL);
 	if (it == NULL)
 		return -1;
 	int rc = 0;
@@ -769,9 +769,13 @@ generic_index_replace(struct index *index, struct tuple *old_tuple,
 
 struct iterator *
 generic_index_create_iterator(struct index *base, enum iterator_type type,
-			      const char *key, uint32_t part_count)
+			      const char *key, uint32_t part_count,
+			      const char *after)
 {
-	(void) type; (void) key; (void) part_count;
+	(void)type;
+	(void)key;
+	(void)part_count;
+	(void)after;
 	diag_set(UnsupportedIndexFeature, base->def, "read view");
 	return NULL;
 }
