@@ -1,0 +1,7 @@
+1..4
+	*** simple_check ***
+ok 1 - Position must be unpacked
+ok 2 - Keys must match
+ok 3 - Invalid position must not be unpacked
+ok 4 - Invalid position must not be unpacked
+	*** simple_check: done ***
