@@ -32,12 +32,21 @@
  */
 
 #include <stddef.h>
+#include <stdint.h>
+#include "trivia/util.h"
 
 #if defined(__cplusplus)
 extern "C" {
 #endif /* defined(__cplusplus) */
 
 struct lua_State;
+
+/**
+ * Pack position on region of current fiber.
+ * Function is private and used only by FFI.
+ */
+API_EXPORT const char *
+position_pack_on_gc(struct position *pos, uint32_t *size);
 
 char *
 lbox_encode_tuple_on_gc(struct lua_State *L, int idx, size_t *p_len);

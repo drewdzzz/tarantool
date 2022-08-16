@@ -42,6 +42,8 @@
 #include "box/lua/tuple.h"
 #include "box/xrow.h"
 #include "mpstream/mpstream.h"
+#include "box/position.h"
+#include "errinj.h"
 
 static uint32_t CTID_STRUCT_TUPLE_FORMAT_PTR;
 
@@ -59,6 +61,29 @@ lbox_encode_tuple_on_gc(lua_State *L, int idx, size_t *p_len)
 	mpstream_flush(&stream);
 	*p_len = region_used(gc) - used;
 	return (char *) region_join_xc(gc, *p_len);
+}
+
+API_EXPORT const char *
+position_pack_on_gc(struct position *pos, uint32_t *size)
+{
+	assert(pos != NULL);
+	assert(size != NULL);
+	assert(cord() != NULL);
+
+	*size = position_pack_size(pos);
+	char *buf = NULL;
+	struct errinj *inj = errinj(ERRINJ_POSITION_PACK_ON_GC_ALLOC,
+				    ERRINJ_BOOL);
+	if (inj == NULL || inj->bparam == false)
+		buf = (char *)region_alloc(&fiber()->gc, *size);
+	if (buf == NULL) {
+		diag_set(OutOfMemory, *size, "region",
+			 "position_pack_on_gc");
+		*size = 0;
+		return NULL;
+	}
+	position_pack(pos, buf);
+	return buf;
 }
 
 /**

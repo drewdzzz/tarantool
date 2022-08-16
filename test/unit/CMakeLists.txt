@@ -331,3 +331,6 @@ target_link_libraries(string.test core unit)
 
 add_executable(qsort_arg.test qsort_arg.cc core_test_utils.c)
 target_link_libraries(qsort_arg.test misc unit)
+
+add_executable(position.test position.c box_test_utils.c)
+target_link_libraries(position.test box unit)
