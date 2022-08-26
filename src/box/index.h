@@ -480,6 +480,14 @@ struct index_vtab {
 	int (*get)(struct index *index, const char *key,
 		   uint32_t part_count, struct tuple **result);
 	/**
+	 * Get position of iterator - extracted cmp_def of last fetched
+	 * tuple. If iterator is exhausted, it returns position of last
+	 * tuple. If there were no tuples fetched, pos and size are not
+	 * updated.
+	 */
+	int (*iterator_position)(struct index *index, struct iterator *it,
+				 const char **pos, uint32_t *size);
+	/**
 	 * Main entrance point for changing data in index. Once built and
 	 * before deletion this is the only way to insert, replace and delete
 	 * data from the index.
@@ -773,6 +781,13 @@ index_get(struct index *index, const char *key,
 }
 
 static inline int
+index_iterator_position(struct index *index, struct iterator *it,
+			const char **pos, uint32_t *size)
+{
+	return index->vtab->iterator_position(index, it, pos, size);
+}
+
+static inline int
 index_replace(struct index *index, struct tuple *old_tuple,
 	      struct tuple *new_tuple, enum dup_replace_mode mode,
 	      struct tuple **result, struct tuple **successor)
@@ -901,6 +916,9 @@ int
 generic_index_get_internal(struct index *index, const char *key,
 			   uint32_t part_count, struct tuple **result);
 int generic_index_get(struct index *, const char *, uint32_t, struct tuple **);
+int
+generic_index_iterator_position(struct index *index, struct iterator *it,
+				const char **pos, uint32_t *size);
 int generic_index_replace(struct index *, struct tuple *, struct tuple *,
 			  enum dup_replace_mode,
 			  struct tuple **, struct tuple **);

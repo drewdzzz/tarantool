@@ -754,6 +754,17 @@ generic_index_get(struct index *index, const char *key,
 }
 
 int
+generic_index_iterator_position(struct index *index, struct iterator *it,
+				const char **pos, uint32_t *size)
+{
+	(void)it;
+	(void)pos;
+	(void)size;
+	diag_set(UnsupportedIndexFeature, index->def, "pagination");
+	return -1;
+}
+
+int
 generic_index_replace(struct index *index, struct tuple *old_tuple,
 		      struct tuple *new_tuple, enum dup_replace_mode mode,
 		      struct tuple **result, struct tuple **successor)
