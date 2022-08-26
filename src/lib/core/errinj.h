@@ -104,6 +104,7 @@ struct errinj {
 	_(ERRINJ_NETBOX_IO_ERROR, ERRINJ_BOOL, {.bparam = false}) \
 	_(ERRINJ_PORT_DUMP, ERRINJ_BOOL, {.bparam = false}) \
 	_(ERRINJ_POSITION_PACK_ON_GC_ALLOC, ERRINJ_BOOL, {.bparam = false}) \
+	_(ERRINJ_ITERATOR_POSITION_FAIL, ERRINJ_BOOL, {.bparam = false}) \
 	_(ERRINJ_RAFT_WAIT_TERM_PERSISTED_DELAY, ERRINJ_BOOL, {.bparam = false}) \
 	_(ERRINJ_RELAY_BREAK_LSN, ERRINJ_INT, {.iparam = -1}) \
 	_(ERRINJ_RELAY_EXIT_DELAY, ERRINJ_DOUBLE, {.dparam = 0}) \
