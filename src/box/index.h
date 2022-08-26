@@ -50,6 +50,7 @@ struct index_read_view_iterator;
 struct index_def;
 struct key_def;
 struct info_handler;
+struct position;
 
 typedef struct tuple box_tuple_t;
 typedef struct key_def box_key_def_t;
@@ -250,6 +251,15 @@ box_tuple_extract_key(box_tuple_t *tuple, uint32_t space_id,
 		      uint32_t index_id, uint32_t *key_size);
 
 /** \endcond public */
+
+/**
+ * Get position of tuple in index (multikey indexes are not supported).
+ * box_index_tuple_position is private and used only by FFI.
+ */
+API_EXPORT int
+box_index_tuple_position(uint32_t space_id, uint32_t index_id,
+			 const char *tuple, const char *tuple_end,
+			 struct position *pos);
 
 /**
  * Index statistics (index:stat())

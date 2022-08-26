@@ -41,6 +41,7 @@
 #include "info/info.h"
 #include "memtx_tx.h"
 #include "box.h"
+#include "position.h"
 
 struct rlist box_on_select = RLIST_HEAD_INITIALIZER(box_on_select);
 
@@ -190,6 +191,33 @@ check_index(uint32_t space_id, uint32_t index_id,
 	if (*index == NULL)
 		return -1;
 	return 0;
+}
+
+API_EXPORT int
+box_index_tuple_position(uint32_t space_id, uint32_t index_id,
+			 const char *tuple, const char *tuple_end,
+			 struct position *pos)
+{
+	struct space *space;
+	struct index *index;
+	if (check_index(space_id, index_id, &space, &index) != 0)
+		return -1;
+	if (index->def->key_def->for_func_index) {
+		diag_set(ClientError, ER_UNSUPPORTED, "Functional index",
+			 "position by tuple");
+		return -1;
+	}
+	if (index->def->key_def->is_multikey) {
+		diag_set(ClientError, ER_UNSUPPORTED, "Multikey index",
+			 "position by tuple");
+		return -1;
+	}
+	if (tuple_validate_raw(space->format, tuple) != 0)
+		return -1;
+	struct key_def *cmp_def = index->def->cmp_def;
+	pos->key = tuple_extract_key_raw(tuple, tuple_end, cmp_def,
+					 MULTIKEY_NONE, &pos->key_size);
+	return pos->key != NULL ? 0 : -1;
 }
 
 /* }}} */

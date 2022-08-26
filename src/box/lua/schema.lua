@@ -114,6 +114,25 @@ ffi.cdef[[
     void
     port_destroy(struct port *port);
 
+    struct position {
+        uint32_t key_size;
+        const char *key;
+    };
+
+    void
+    position_reset(struct position *pos);
+
+    int
+    position_unpack(const char *ptr, struct position *pos);
+
+    const char *
+    position_pack_on_gc(struct position *pos, uint32_t *size);
+
+    int
+    box_index_tuple_position(uint32_t space_id, uint32_t index_id,
+                             const char *tuple, const char *tuple_end,
+                             struct position *pos);
+
     int
     box_select(uint32_t space_id, uint32_t index_id,
                int iterator, uint32_t offset, uint32_t limit,
@@ -2514,6 +2533,25 @@ base_index_mt.alter = function(index, options)
         box.error(box.error.PROC_LUA, "Usage: index:alter{opts}")
     end
     return box.schema.index.alter(index.space_id, index.id, options)
+end
+base_index_mt.tuple_pos = function(index, tuple)
+    check_index_arg(index, 'tuple_pos')
+    if not tuple then
+        box.error({reason="Usage index:tuple_pos(tuple)"})
+    end
+    local ibuf = cord_ibuf_take()
+    local data, data_end = tuple_encode(ibuf, tuple)
+    local rc = builtin.box_index_tuple_position(index.space_id, index.id, data,
+                                                data_end, position)
+    cord_ibuf_put(ibuf)
+    if rc ~= 0 then
+        box.error()
+    end
+    local pos = builtin.position_pack_on_gc(position, position_len)
+    if not pos then
+        box.error()
+    end
+    return ffi.string(pos, position_len[0])
 end
 
 local read_ops = {'select', 'get', 'min', 'max', 'count', 'random', 'pairs'}
