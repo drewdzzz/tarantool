@@ -395,13 +395,13 @@ tree_iterator_next_base(struct iterator *iterator, struct tuple **ret)
 	}
 	struct memtx_tree_data<USE_HINT> *res =
 		memtx_tree_iterator_get_elem(&index->tree, &it->tree_iterator);
-	tree_iterator_set_current<USE_HINT>(it, res);
-	*ret = it->current.tuple;
+	*ret = res != NULL ? res->tuple : NULL;
 	struct index *idx = iterator->index;
 	struct space *space = space_by_id(iterator->space_id);
 	if (*ret == NULL) {
 		iterator->next_internal = exhausted_iterator_next;
 	} else {
+		tree_iterator_set_current<USE_HINT>(it, res);
 		struct txn *txn = in_txn();
 		bool is_multikey = iterator->index->def->key_def->is_multikey;
 		uint32_t mk_index = is_multikey ? (uint32_t)res->hint : 0;
@@ -437,13 +437,13 @@ tree_iterator_prev_base(struct iterator *iterator, struct tuple **ret)
 	tuple_ref(successor);
 	struct memtx_tree_data<USE_HINT> *res =
 		memtx_tree_iterator_get_elem(&index->tree, &it->tree_iterator);
-	tree_iterator_set_current<USE_HINT>(it, res);
-	*ret = it->current.tuple;
+	*ret = res != NULL ? res->tuple : NULL;
 	struct index *idx = iterator->index;
 	struct space *space = space_by_id(iterator->space_id);
 	if (*ret == NULL) {
 		iterator->next_internal = exhausted_iterator_next;
 	} else {
+		tree_iterator_set_current<USE_HINT>(it, res);
 		struct txn *txn = in_txn();
 		bool is_multikey = iterator->index->def->key_def->is_multikey;
 		uint32_t mk_index = is_multikey ? (uint32_t)res->hint : 0;
@@ -493,7 +493,6 @@ tree_iterator_next_equal_base(struct iterator *iterator, struct tuple **ret)
 				   it->key_data.part_count,
 				   it->key_data.hint,
 				   index->base.def->key_def) != 0) {
-		tree_iterator_set_current<USE_HINT>(it, NULL);
 		iterator->next_internal = exhausted_iterator_next;
 		*ret = NULL;
 		/*
@@ -552,7 +551,6 @@ tree_iterator_prev_equal_base(struct iterator *iterator, struct tuple **ret)
 				   it->key_data.part_count,
 				   it->key_data.hint,
 				   index->base.def->key_def) != 0) {
-		tree_iterator_set_current<USE_HINT>(it, NULL);
 		iterator->next_internal = exhausted_iterator_next;
 		*ret = NULL;
 
