@@ -1447,17 +1447,50 @@ func_index_compare_with_key(struct tuple *tuple, hint_t tuple_hint,
 			    const char *key, uint32_t part_count,
 			    hint_t key_hint, struct key_def *key_def)
 {
-	(void)tuple; (void)key_hint;
+	(void)key_hint;
 	assert(key_def->for_func_index);
 	assert(is_nullable == key_def->is_nullable);
 	const char *tuple_key = tuple_data((struct tuple *)tuple_hint);
 	assert(mp_typeof(*tuple_key) == MP_ARRAY);
 
 	uint32_t tuple_key_count = mp_decode_array(&tuple_key);
-	part_count = MIN(part_count, tuple_key_count);
+	uint32_t cmp_part_count = MIN(part_count, tuple_key_count);
+	cmp_part_count = MIN(cmp_part_count, key_def->part_count);
+	int rc = key_compare_parts<is_nullable>(tuple_key, key, cmp_part_count,
+						key_def);
+	if (rc != 0)
+		return rc;
+	/* Equals if nothing to compare. */
+	if (part_count == cmp_part_count ||
+	    key_def->part_count == cmp_part_count)
+		return 0;
+	/*
+	 * Now we know that tuple_key count is less than key part_count
+	 * and key_def part_count, so let's keep comparing, but with
+	 * original tuple fields. We will compare parts of primary key,
+	 * it cannot contain nullable parts so the code is simplified
+	 * correspondingly.
+	 */
+	const char *tuple_raw = tuple_data(tuple);
+	struct tuple_format *format = tuple_format(tuple);
+	const uint32_t *field_map = tuple_field_map(tuple);
+	const char *field;
+	/* Skip compared fields. */
+	for (uint32_t i = 0; i < cmp_part_count; i++) {
+		mp_next(&key);
+	}
 	part_count = MIN(part_count, key_def->part_count);
-	return key_compare_parts<is_nullable>(tuple_key, key, part_count,
-					      key_def);
+	for (uint32_t i = cmp_part_count; i < part_count; i++) {
+		struct key_part *part = &key_def->parts[i];
+		field = tuple_field_raw_by_part(format, tuple_raw, field_map,
+						part, MULTIKEY_NONE);
+		assert(field != NULL);
+		rc = tuple_compare_field(field, key, part->type, part->coll);
+		mp_next(&key);
+		if (rc != 0)
+			return rc;
+	}
+	return 0;
 }
 
 #undef KEY_COMPARATOR
