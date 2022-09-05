@@ -2556,11 +2556,11 @@ base_index_mt.select_luac = function(index, key, opts)
     check_index_arg(index, 'select')
     local key = keify(key)
     local key_is_nil = #key == 0
-    local iterator, offset, limit, fullscan =
+    local iterator, offset, limit, fullscan, after, fetch_pos =
         check_select_opts(opts, key_is_nil)
     check_select_safety(index, key_is_nil, iterator, limit, offset, fullscan)
     return internal.select(index.space_id, index.id, iterator,
-        offset, limit, key)
+        offset, limit, key, after, fetch_pos)
 end
 
 base_index_mt.update = function(index, key, ops)

@@ -86,6 +86,27 @@ position_pack_on_gc(struct position *pos, uint32_t *size)
 	return buf;
 }
 
+void
+lbox_normalize_after(lua_State *L, int idx, int space_id, int index_id, struct position *pos)
+{
+	if (lua_isstring(L, idx)) {
+		const char *encoded_pos = lua_tostring(L, idx);
+		if (position_unpack(encoded_pos, pos) != 0) {
+			diag_set(ClientError, ER_INVALID_POSITION);
+			luaT_error(L);
+		}
+	} else if (lua_istable(L, idx) || luaT_istuple(L, idx) != NULL) {
+		size_t size;
+		const char *tuple = lbox_encode_tuple_on_gc(L, idx, &size);
+		if (box_index_tuple_position(space_id, index_id, tuple, 
+					     tuple + size, pos) != 0)
+			luaT_error(L);
+	} else { /* box.NULL */
+		pos->key = NULL;
+		pos->key_size = 0;
+	}
+}
+
 /**
  * __index metamethod for the formatted array table that lookups field by name.
  * Metatable of the table is expected to have `field_map` that provides
@@ -208,10 +229,10 @@ port_msgpack_dump_lua(struct port *base, struct lua_State *L, bool is_flat)
 static int
 lbox_select(lua_State *L)
 {
-	if (lua_gettop(L) != 6 || !lua_isnumber(L, 1) || !lua_isnumber(L, 2) ||
+	if (lua_gettop(L) != 8 || !lua_isnumber(L, 1) || !lua_isnumber(L, 2) ||
 		!lua_isnumber(L, 3) || !lua_isnumber(L, 4) || !lua_isnumber(L, 5)) {
 		return luaL_error(L, "Usage index:select(iterator, offset, "
-				  "limit, key)");
+				  "limit, key, after, fetch_pos)");
 	}
 
 	uint32_t space_id = lua_tonumber(L, 1);
@@ -222,13 +243,15 @@ lbox_select(lua_State *L)
 
 	size_t key_len;
 	const char *key = lbox_encode_tuple_on_gc(L, 6, &key_len);
+	struct position pos;
+	lbox_normalize_after(L, 7, space_id, index_id, &pos);
+	bool fetch_pos = lua_toboolean(L, 8);
 
 	struct port port;
-	if (box_select(space_id, index_id, iterator, offset, limit,
-		       key, key + key_len, &port) != 0) {
+	if (box_select_after(space_id, index_id, iterator, offset, limit, key,
+			     key + key_len, &pos, fetch_pos, &port) != 0) {
 		return luaT_error(L);
 	}
-
 	/*
 	 * Lua may raise an exception during allocating table or pushing
 	 * tuples. In this case `port' definitely will leak. It is possible to
@@ -240,7 +263,14 @@ lbox_select(lua_State *L)
 	 */
 	port_dump_lua(&port, L, false);
 	port_destroy(&port);
-	return 1; /* lua table with tuples */
+	int ret_count = 1;
+	if (fetch_pos) {
+		ret_count++;
+		uint32_t pos_size;
+		const char *decoded_pos = position_pack_on_gc(&pos, &pos_size);
+		lua_pushlstring(L, decoded_pos, pos_size);
+	}
+	return ret_count;
 }
 
 /* }}} */
