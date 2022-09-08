@@ -156,6 +156,13 @@ struct vinyl_iterator {
 	struct vy_tx *tx;
 	/** Search key. */
 	struct vy_entry key;
+	/** After key. */
+	struct vy_entry after;
+	/**
+	 * Last tuple, needed for iterator position method.
+	 * Do not set none entry when iterator is exhausted!
+	 */
+	struct vy_entry last;
 	/** Vinyl read iterator. */
 	struct vy_read_iterator iterator;
 	/**
@@ -165,6 +172,8 @@ struct vinyl_iterator {
 	struct vy_tx tx_autocommit;
 	/** Trigger invoked when tx ends to close the iterator. */
 	struct trigger on_tx_destroy;
+	/** True if need to check equality on level of vinyl_iterator. */
+	bool need_check_eq;
 };
 
 static const struct engine_vtab vinyl_engine_vtab;
@@ -3607,6 +3616,21 @@ vinyl_iterator_account_read(struct vinyl_iterator *it, double start_time,
 		vy_stmt_counter_acct_tuple(&lsm->stat.get, result);
 }
 
+/**
+ * Set last fetched entry to vinyl iterator.
+ * Do not set none entry when iterator is exhausted - last entry
+ * may be needed for pagination.
+ */
+static void
+vinyl_iterator_set_last(struct vinyl_iterator *it, struct vy_entry entry)
+{
+	if (it->last.stmt != NULL)
+		tuple_unref(it->last.stmt);
+	it->last = entry;
+	if (entry.stmt != NULL)
+		tuple_ref(entry.stmt);
+}
+
 static int
 vinyl_iterator_primary_next(struct iterator *base, struct tuple **ret)
 {
@@ -3628,6 +3652,9 @@ vinyl_iterator_primary_next(struct iterator *base, struct tuple **ret)
 	struct vy_entry entry;
 	if (vy_read_iterator_next(&it->iterator, &entry) != 0)
 		goto fail;
+	if (it->need_check_eq &&
+	    vy_entry_compare(entry, it->key, lsm->key_def) != 0)
+		entry = vy_entry_none();
 	vy_read_iterator_cache_add(&it->iterator, entry);
 	vinyl_iterator_account_read(it, start_time, entry.stmt);
 	if (entry.stmt == NULL) {
@@ -3635,6 +3662,7 @@ vinyl_iterator_primary_next(struct iterator *base, struct tuple **ret)
 		vinyl_iterator_close(it);
 	} else {
 		tuple_bless(entry.stmt);
+		vinyl_iterator_set_last(it, entry);
 	}
 	*ret = entry.stmt;
 	vy_lsm_unref(lsm);
@@ -3667,6 +3695,9 @@ next:
 
 	if (vy_read_iterator_next(&it->iterator, &partial) != 0)
 		goto fail;
+	if (it->need_check_eq &&
+	    vy_entry_compare(partial, it->key, lsm->key_def) != 0)
+		partial = vy_entry_none();
 
 	if (partial.stmt == NULL) {
 		/* EOF. Close the iterator immediately. */
@@ -3686,6 +3717,7 @@ next:
 	vy_read_iterator_cache_add(&it->iterator, entry);
 	vinyl_iterator_account_read(it, start_time, entry.stmt);
 	*ret = entry.stmt;
+	vinyl_iterator_set_last(it, entry);
 	tuple_bless(*ret);
 	tuple_unref(*ret);
 out:
@@ -3704,6 +3736,7 @@ vinyl_iterator_free(struct iterator *base)
 	struct vinyl_iterator *it = (struct vinyl_iterator *)base;
 	if (base->next != exhausted_iterator_next)
 		vinyl_iterator_close(it);
+	vinyl_iterator_set_last(it, vy_entry_none());
 	mempool_free(it->pool, it);
 }
 
@@ -3718,10 +3751,6 @@ vinyl_index_create_iterator(struct index *base, enum iterator_type type,
 	if (type > ITER_GT) {
 		diag_set(UnsupportedIndexFeature, base->def,
 			 "requested iterator type");
-		return NULL;
-	}
-	if (unlikely(after != NULL)) {
-		diag_set(UnsupportedIndexFeature, base->def, "pagination");
 		return NULL;
 	}
 
@@ -3743,6 +3772,17 @@ vinyl_index_create_iterator(struct index *base, enum iterator_type type,
 		mempool_free(&env->iterator_pool, it);
 		return NULL;
 	}
+	if (after != NULL) {
+		it->after = vy_entry_key_new(lsm->env->key_format, lsm->cmp_def,
+						after, lsm->cmp_def->part_count);
+		if (it->after.stmt == NULL) {
+			tuple_unref(it->key.stmt);
+			mempool_free(&env->iterator_pool, it);
+			return NULL;
+		}
+	} else {
+		it->after = vy_entry_none();
+	}
 
 	iterator_create(&it->base, base);
 	if (lsm->index_id == 0)
@@ -3751,6 +3791,8 @@ vinyl_index_create_iterator(struct index *base, enum iterator_type type,
 		it->base.next = vinyl_iterator_secondary_next;
 	it->base.free = vinyl_iterator_free;
 	it->pool = &env->iterator_pool;
+	it->last = vy_entry_none();
+	it->need_check_eq = false;
 
 	if (tx != NULL) {
 		/*
@@ -3767,9 +3809,37 @@ vinyl_index_create_iterator(struct index *base, enum iterator_type type,
 	it->tx = tx;
 
 	lsm->stat.lookup++;
-	vy_read_iterator_open(&it->iterator, lsm, tx, type, it->key,
+	struct vy_entry read_key = it->key;
+	if (after != NULL) {
+		/*
+		 * We need to change iterator type to GT or LT depending on
+		 * its direction to skip tuple with key equals @after. So in
+		 * case of equality iterators we need to check that fetched
+		 * tuples match query key on vinyl_iterator level (basically,
+		 * equality is checked on level of vy_read_iterator).
+		 */
+		if (type == ITER_EQ || type == ITER_REQ)
+			it->need_check_eq = true;
+		type = iterator_direction(type) > 0 ? ITER_GT : ITER_LT;
+		read_key = it->after;
+	}
+	vy_read_iterator_open(&it->iterator, lsm, tx, type, read_key,
 			      (const struct vy_read_view **)&tx->read_view);
 	return (struct iterator *)it;
+}
+
+static int
+vinyl_index_iterator_position(struct index *index, struct iterator *base,
+			      const char **pos, uint32_t *size)
+{
+	struct vinyl_iterator *it = (struct vinyl_iterator *)base;
+	struct tuple *tuple = it->last.stmt;
+	if (tuple == NULL)
+		return 0;
+	hint_t mk_idx = index->def->key_def->is_multikey ? it->last.hint
+							 : MULTIKEY_NONE;
+	*pos = tuple_extract_key(tuple, index->def->cmp_def, mk_idx, size);
+	return *pos != NULL ? 0 : -1;
 }
 
 static int
@@ -4584,7 +4654,7 @@ static const struct index_vtab vinyl_index_vtab = {
 	/* .count = */ generic_index_count,
 	/* .get_internal = */ generic_index_get_internal,
 	/* .get = */ vinyl_index_get,
-	/* .tuple_position = */ generic_index_iterator_position,
+	/* .iterator_position = */ vinyl_index_iterator_position,
 	/* .replace = */ generic_index_replace,
 	/* .create_iterator = */ vinyl_index_create_iterator,
 	/* .create_read_view = */ generic_index_create_read_view,

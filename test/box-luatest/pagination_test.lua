@@ -1,32 +1,32 @@
 local server = require('test.luatest_helpers.server')
 local t = require('luatest')
-local tree_g = t.group('Tree index tests')
+local tree_g = t.group('Tree index tests', t.helpers.matrix{engine={'memtx', 'vinyl'}})
 
-tree_g.before_all(function()
-    tree_g.server = server:new{
+tree_g.before_all(function(cg)
+    cg.server = server:new{
         alias   = 'default',
     }
-    tree_g.server:start()
+    cg.server:start()
 end)
 
-tree_g.after_all(function()
-    tree_g.server:drop()
+tree_g.after_all(function(cg)
+    cg.server:drop()
 end)
 
-tree_g.before_each(function()
-    tree_g.server:exec(function()
-        box.schema.space.create('s', {engine = 'memtx'})
-    end)
+tree_g.before_each(function(cg)
+    cg.server:exec(function(engine)
+        box.schema.space.create('s', {engine = engine})
+    end, {cg.params.engine})
 end)
 
-tree_g.after_each(function()
-    tree_g.server:exec(function()
+tree_g.after_each(function(cg)
+    cg.server:exec(function()
         box.space.s:drop()
     end)
 end)
 
-tree_g.test_tree_pagination = function()
-    tree_g.server:exec(function()
+tree_g.test_tree_pagination = function(cg)
+    cg.server:exec(function()
         local t = require('luatest')
         local s = box.space.s
         s:create_index("pk", {type = "tree"})
@@ -118,8 +118,8 @@ tree_g.test_tree_pagination = function()
     end)
 end
 
-tree_g.test_tree_multikey_pagination = function()
-    tree_g.server:exec(function()
+tree_g.test_tree_multikey_pagination = function(cg)
+    cg.server:exec(function()
         local t = require('luatest')
         local s = box.space.s
         s:create_index("pk", {type = "tree"})
@@ -203,8 +203,8 @@ end
 
 --[[ We must return an empty position if there are no tuples
 satisfying the filters. ]]--
-tree_g.test_no_tuples_satisfying_filters = function()
-    tree_g.server:exec(function()
+tree_g.test_no_tuples_satisfying_filters = function(cg)
+    cg.server:exec(function()
         local t = require('luatest')
         local s = box.space.s
         s:create_index("pk", {type = "tree"})
@@ -238,8 +238,8 @@ tree_g.test_no_tuples_satisfying_filters = function()
     end)
 end
 
-tree_g.test_invalid_positions = function()
-    tree_g.server:exec(function()
+tree_g.test_invalid_positions = function(cg)
+    cg.server:exec(function()
         local t = require('luatest')
         local s = box.space.s
         s:create_index('pk', {type = 'tree'})
@@ -274,8 +274,8 @@ tree_g.test_invalid_positions = function()
     end)
 end
 
-tree_g.test_tree_pagination_no_duplicates = function()
-    tree_g.server:exec(function()
+tree_g.test_tree_pagination_no_duplicates = function(cg)
+    cg.server:exec(function()
         local t = require('luatest')
         local s = box.space.s
         s:create_index("pk", {type = "tree"})
@@ -309,8 +309,8 @@ tree_g.test_tree_pagination_no_duplicates = function()
     end)
 end
 
-tree_g.test_tuple_pos_simple = function()
-    tree_g.server:exec(function()
+tree_g.test_tuple_pos_simple = function(cg)
+    cg.server:exec(function()
         local t = require('luatest')
         local s = box.space.s
         s:create_index("pk", {type = "tree"})
@@ -345,8 +345,8 @@ tree_g.test_tuple_pos_simple = function()
     end)
 end
 
-tree_g.test_tuple_pos_invalid_tuple = function()
-    tree_g.server:exec(function()
+tree_g.test_tuple_pos_invalid_tuple = function(cg)
+    cg.server:exec(function()
         local t = require('luatest')
         local s = box.space.s
         s:create_index("pk", {type = "tree", parts={{field=1, type='uint'}}})
