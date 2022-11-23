@@ -408,8 +408,10 @@ endif()
 #
 # ZLIB
 #
-set(ZLIB_FIND_REQUIRED ON)
-find_package(ZLIB)
+if (!ZLIB_FOUND)
+    set(ZLIB_FIND_REQUIRED ON)
+    find_package(ZLIB)
+endif()
 
 #
 # ZZIP
