@@ -12,13 +12,13 @@ local METRICS_PREFIX = "metrics_collector"
 
 local daemon = {
     enabled  = false,
-    interval = 0,
+    send_interval = 0,
     host     = nil,
     send_metrics = false,
     metrics_collect_interval = 0,
     metrics_limit = 0,
-    fiber    = nil,
-    control  = nil,
+    send_fiber    = nil,
+    send_control  = nil,
     guard    = nil,
     shutdown = nil,
     metrics  = {},
@@ -343,14 +343,14 @@ local function fill_in_feedback(self, feedback)
     return feedback
 end
 
-local function feedback_loop(self)
+local function send_feedback_loop(self)
     fiber.name(PREFIX, { truncate = true })
     -- Speed up the first send.
-    local send_timeout = math.min(120, self.interval)
+    local send_timeout = math.min(120, self.send_interval)
 
     while true do
-        local msg = self.control:get(send_timeout)
-        send_timeout = self.interval
+        local msg = self.send_control:get(send_timeout)
+        send_timeout = self.send_interval
         -- if msg == "send" then we simply send feedback
         if msg == "stop" then
             break
@@ -435,8 +435,8 @@ local function guard_loop(self)
 
     while true do
 
-        if get_fiber_id(self.fiber) == 0 then
-            self.fiber = fiber.create(feedback_loop, self)
+        if get_fiber_id(self.send_fiber) == 0 then
+            self.send_fiber = fiber.create(send_feedback_loop, self)
             log.verbose("%s restarted", PREFIX)
         end
         if self.send_metrics and
@@ -445,7 +445,7 @@ local function guard_loop(self)
                 fiber.create(metrics_collect_loop, self)
             log.verbose("%s restarted", METRICS_PREFIX)
         end
-        local interval = self.interval
+        local interval = self.send_interval
         if self.send_metrics then
             interval = math.min(interval, self.metrics_collect_interval)
         end
@@ -477,7 +477,7 @@ local function start(self)
         -- shortly after it. And maybe more to come. Do not make anyone wait for
         -- feedback daemon to process the incoming events, and set channel size
         -- to 10 just in case.
-        self.control = fiber.channel(10)
+        self.send_control = fiber.channel(10)
         self.shutdown = fiber.channel()
         self.cached_events = {}
         self.metrics = {}
@@ -493,8 +493,8 @@ local function stop(self)
         self.guard:cancel()
         self.shutdown:get()
     end
-    if (get_fiber_id(self.fiber) ~= 0) then
-        self.control:put("stop")
+    if (get_fiber_id(self.send_fiber) ~= 0) then
+        self.send_control:put("stop")
         self.shutdown:get()
     end
     if get_fiber_id(self.metrics_collect_fiber) ~= 0 then
@@ -502,9 +502,9 @@ local function stop(self)
         self.shutdown:get()
     end
     self.guard = nil
-    self.fiber = nil
+    self.send_fiber = nil
     self.metrics_collect_fiber = nil
-    self.control = nil
+    self.send_control = nil
     self.shutdown = nil
     self.metrics = {}
     log.verbose("%s stopped", PREFIX)
@@ -521,7 +521,7 @@ setmetatable(daemon, {
             box.internal.cfg_set_feedback()
             daemon.enabled  = box.cfg.feedback_enabled
             daemon.host     = box.cfg.feedback_host
-            daemon.interval = box.cfg.feedback_interval
+            daemon.send_interval = box.cfg.feedback_interval
             daemon.send_metrics = box.cfg.feedback_send_metrics
             daemon.metrics_collect_interval =
                 box.cfg.feedback_metrics_collect_interval
@@ -546,8 +546,8 @@ setmetatable(daemon, {
             save_event(daemon, event)
         end,
         send = function()
-            if daemon.control ~= nil then
-                daemon.control:put("send")
+            if daemon.send_control ~= nil then
+                daemon.send_control:put("send")
             end
         end
     }
