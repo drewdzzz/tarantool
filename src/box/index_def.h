@@ -44,6 +44,7 @@ enum index_type {
 	TREE,     /* TREE Index */
 	BITSET,   /* BITSET Index */
 	RTREE,    /* R-Tree Index */
+	PGDM,     /* PGDM Index */
 	index_type_MAX,
 };
 
