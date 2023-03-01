@@ -149,6 +149,7 @@ set(box_sources
     memtx_tree.cc
     memtx_rtree.cc
     memtx_bitset.cc
+    memtx_pgdm.cc
     memtx_tx.c
     module_cache.c
     engine.c

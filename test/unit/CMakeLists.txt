@@ -600,3 +600,13 @@ create_unit_test(PREFIX lua_tweaks
                            ${LIBYAML_LIBRARIES}
                            ${READLINE_LIBRARIES}
 )
+
+create_unit_test(PREFIX gblock
+                 SOURCES gblock.cc
+                 LIBRARIES small misc
+)
+
+create_unit_test(PREFIX pgdm
+                 SOURCES pgdm.cc
+                 LIBRARIES small misc
+)

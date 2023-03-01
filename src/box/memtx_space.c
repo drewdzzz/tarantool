@@ -40,6 +40,7 @@
 #include "memtx_tree.h"
 #include "memtx_rtree.h"
 #include "memtx_bitset.h"
+#include "memtx_pgdm.h"
 #include "memtx_engine.h"
 #include "column_mask.h"
 #include "sequence.h"
@@ -826,6 +827,8 @@ memtx_space_check_index_def(struct space *space, struct index_def *index_def)
 		}
 		/* no furter checks of parts needed */
 		return 0;
+	case PGDM:
+		return 0;
 	default:
 		diag_set(ClientError, ER_INDEX_TYPE,
 			 index_def->name, space_name(space));
@@ -891,6 +894,8 @@ memtx_space_create_index(struct space *space, struct index_def *index_def)
 		return memtx_rtree_index_new(memtx, index_def);
 	case BITSET:
 		return memtx_bitset_index_new(memtx, index_def);
+	case PGDM:
+		return memtx_pgdm_index_new(memtx, index_def);
 	default:
 		unreachable();
 		return NULL;
