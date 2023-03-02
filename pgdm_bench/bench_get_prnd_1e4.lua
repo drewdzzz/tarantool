@@ -5,8 +5,15 @@ s = box.schema.space.create('select_tester')
 s:create_index('pk')
 sk = s:create_index('sk', {type = 'pgdm'})
 local iter_num = 1e4
+
+data = {}
 for i = 1, iter_num do
-	s:replace{i}
+	local pos = math.random(1, #data + 1)
+	table.insert(data, pos, i)
+end
+
+for i = 1, iter_num do
+	s:replace{data[i]}
 end
 
 function bench_tree()
@@ -50,7 +57,11 @@ end
 tree_avg_time = tree_avg_time / 5
 pgdm_avg_time = pgdm_avg_time / 5
 
-print('Tree RPS: ', iter_num / tree_avg_time)
-print('Pgdm RPS: ', iter_num / pgdm_avg_time)
+tree_rps = iter_num / tree_avg_time 
+pgdm_rps = iter_num / pgdm_avg_time 
+
+print('Tree RPS: ', tree_rps)
+print('Pgdm RPS: ', pgdm_rps)
+print('Gained ', (pgdm_rps - tree_rps) / tree_rps * 100, '%')
 
 s:drop()
