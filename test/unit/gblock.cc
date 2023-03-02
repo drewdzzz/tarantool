@@ -38,6 +38,14 @@
 	}                                                                                \
 }
 
+#define TEST_CHECK_LE(x, a) {                                                      \
+        if (x > a) {                                                            \
+                std::cerr << "Range test faied in " << __FILE__ << "on"                  \
+		<< __LINE__ << ", x: {" << x << "} more than {" << a << "}\n";             \
+		abort();                                                                 \
+	}                                                                                \
+}
+
 static void
 test_linear_infinity()
 {
@@ -65,7 +73,7 @@ test_guaranteed_capacity_impl()
 	for (int i = 0; i < 256 * 2 + 1; ++i) {
 		int k = rand() % 65536;
 		auto res = block.insert(k, i);
-		TEST_CHECK_RANGE(res.size(), 0, 1);
+		TEST_CHECK_LE(res.size(), 1);
 		if (res.size() == 1) {
 			block = std::move(*res[0]);
 		}
@@ -87,7 +95,7 @@ test_replaces_impl()
 	for (int i = 0; i < 256 * 2 + 1; ++i) {
 		int k = rand() % 256;
 		auto res = block.insert(k, i);
-		TEST_CHECK_RANGE(res.size(), 0, 1);
+		TEST_CHECK_LE(res.size(), 1);
 		if (res.size() == 1) {
 			block = std::move(*res[0]);
 		}
@@ -155,7 +163,7 @@ test_find_impl()
 			continue;
 		used[k] = i;
 		auto res = block.insert(k, i);
-		TEST_CHECK_RANGE(res.size(), 0, 1);
+		TEST_CHECK_LE(res.size(), 1);
 		if (res.size() == 1) {
 			block = std::move(*res[0]);
 		}
@@ -191,7 +199,7 @@ test_sparse()
 		int k = rand() % 2048;
 		used[k] = i;
 		auto res = block.insert(k, i);
-		TEST_CHECK_RANGE(res.size(), 0, 1);
+		TEST_CHECK_LE(res.size(), 1);
 		if (res.size() == 1)
 			block = *res[0];
 	}

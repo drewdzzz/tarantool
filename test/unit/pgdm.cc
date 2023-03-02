@@ -30,14 +30,6 @@
 	}                                                                         \
 }
 
-#define TEST_CHECK_RANGE(x, a, b) {                                                      \
-        if (x < a || x > b) {                                                            \
-                std::cerr << "Range test faied in " << __FILE__ << "on"                  \
-		<< __LINE__ << ", x: {" << x << "} not in [" << a << ", " << b << "]\n"; \
-		abort();                                                                 \
-	}                                                                                \
-}
-
 static void
 test_linear()
 {
