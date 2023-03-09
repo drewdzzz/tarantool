@@ -701,6 +701,12 @@ int
 boxk(int type, uint32_t space_id, const char *format, ...);
 
 /**
+ * Generate space_id for non-system space. Updates _schema.max_id.
+ */
+int
+box_generate_space_id(uint32_t *new_space_id);
+
+/**
  * Broadcast the identification of the instance
  */
 void
