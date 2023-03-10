@@ -55,11 +55,11 @@ box.stat.UPDATE.total
 ...
 box.stat.REPLACE.total
 ---
-- 1
+- 0
 ...
 box.stat.SELECT.total
 ---
-- 5
+- 4
 ...
 -- check exceptions
 space:get('Impossible value')
@@ -77,14 +77,14 @@ space:get(1)
 ...
 box.stat.SELECT.total
 ---
-- 6
+- 5
 ...
 space:get(11)
 ---
 ...
 box.stat.SELECT.total
 ---
-- 7
+- 6
 ...
 space:select(5)
 ---
@@ -92,7 +92,7 @@ space:select(5)
 ...
 box.stat.SELECT.total
 ---
-- 8
+- 7
 ...
 space:select(15)
 ---
@@ -100,14 +100,14 @@ space:select(15)
 ...
 box.stat.SELECT.total
 ---
-- 9
+- 8
 ...
 for _ in space:pairs() do end
 ---
 ...
 box.stat.SELECT.total
 ---
-- 10
+- 9
 ...
 -- reset
 box.stat.reset()

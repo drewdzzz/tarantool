@@ -5035,21 +5035,19 @@ box_generate_space_id(uint32_t *new_space_id)
 {
 	assert(new_space_id != NULL);
 	static const char key[] = {
-		(char)0x91, /* MsgPack array(1) */
-		(char)0xa6, /* MsgPack string(6) */
-		'm', 'a', 'x', '_', 'i', 'd'
+		(char)0x90, /* MsgPack array(0) */
 	};
 	if (box_check_writable() != 0)
 		return -1;
 	struct tuple *res = NULL;
 	struct credentials *orig_credentials = effective_user();
 	fiber_set_user(fiber(), &admin_credentials);
-	int rc = box_index_get(BOX_SCHEMA_ID, 0, key, key + sizeof(key), &res);
+	int rc = box_index_max(BOX_SPACE_ID, 0, key, key + sizeof(key), &res);
 	fiber_set_user(fiber(), orig_credentials);
 	if (rc != 0)
 		return -1;
 	uint32_t max_id = 0;
-	if (res != NULL && tuple_field_u32(res, 1, &max_id) != 0)
+	if (res != NULL && tuple_field_u32(res, 0, &max_id) != 0)
 		return -1;
 	if (max_id > BOX_SPACE_MAX || max_id < BOX_SYSTEM_ID_MAX)
 		max_id = BOX_SYSTEM_ID_MAX;
@@ -5067,10 +5065,6 @@ box_generate_space_id(uint32_t *new_space_id)
 		if (*new_space_id > BOX_SPACE_MAX)
 			panic("Space id limit is reached");
 	}
-	/** Update _schema.max_id. */
-	if (boxk(IPROTO_REPLACE, BOX_SCHEMA_ID, "[%s%lu]", "max_id",
-		 (unsigned long)*new_space_id) != 0)
-		return -1;
 	return 0;
 }
 
