@@ -128,9 +128,9 @@ test_big_root_simple()
 static void
 test_big_root()
 {
-	pgdm_map<int, int, 8, 2> index;
+	pgdm_map<int, int, 2, 1> index;
 	std::map<int, int> used;
-	for (int i = 0; i < 2048; ++i) {
+	for (int i = 0; i < 512; ++i) {
 		int k = rand() % 8192;
 		used[k] = i;
 		index.insert(k, i);
@@ -156,7 +156,9 @@ test_main()
 int
 main()
 {
-	srand(time(NULL));
+	auto seed = time(NULL);
+	std::cout << "SEED: " << seed << std::endl;
+	srand(seed);
 	test_main();
 
 	plan(1);
