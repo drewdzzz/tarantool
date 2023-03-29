@@ -46,8 +46,10 @@
 #include <small/mempool.h>
 #include <salad/pgdm.hpp>
 
-static const unsigned EPS = 14;
-static const unsigned DELTA = 4;
+// static const unsigned EPS = 14;
+// static const unsigned DELTA = 4;
+static const unsigned EPS = 3;
+static const unsigned DELTA = 1;
 
 struct memtx_pgdm_index {
 	struct index base;
@@ -123,12 +125,12 @@ static ssize_t
 memtx_pgdm_index_count(struct index *base, enum iterator_type type,
 		       const char *key, uint32_t part_count)
 {
-	(void)base;
 	(void)type;
 	(void)key;
 	(void)part_count;
-	abort();
-	return -1;
+	struct memtx_pgdm_index *index = (struct memtx_pgdm_index *)base;
+	index->pgdm->dump();
+	return 0;
 }
 
 static int
