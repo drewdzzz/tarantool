@@ -1,8 +1,8 @@
 require('os').execute('rm *.xlog *.snap')
-math.randomseed(54)
+math.randomseed(42)
 
-local iter_num = 1e4
-local max_num = 4 * 1e4
+local iter_num = 1e5
+local max_num = 4 * 1e5
 
 data = {}
 used = {}

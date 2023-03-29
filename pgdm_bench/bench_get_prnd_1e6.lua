@@ -1,48 +1,32 @@
 require('os').execute('rm *.xlog *.snap')
-math.randomseed(54)
-
-local iter_num = 1e4
-local max_num = 4 * 1e4
-
-data = {}
-used = {}
-used[0] = true
-
-for i = 1, iter_num do
-	num = 0
-	while used[num] do
-		num = math.random(1, max_num)
-	end
-	used[num] = true
-	table.insert(data, num)
-end
-
-require('os').execute('rm *.xlog *.snap')
 clock = require('clock')
 box.cfg{}
 s = box.schema.space.create('select_tester')
 s:create_index('pk')
 sk = s:create_index('sk', {type = 'pgdm'})
+local iter_num = 1e6
+
+data = {}
+for i = 1, iter_num do
+	local pos = math.random(1, #data + 1)
+	table.insert(data, pos, i)
+end
 
 for i = 1, iter_num do
 	s:replace{data[i]}
 end
 
 function bench_tree()
-	for i = 1, max_num do
+	for i = 1, iter_num do
 		s:get{i}
 	end
 end
 
 function bench_pgdm()
-	for i = 1, max_num do
+	for i = 1, iter_num do
 		sk:get{i}
 	end
 end
-
--- Warmup
-bench_tree()
-bench_pgdm()
 
 tree = {}
 pgdm = {}
@@ -67,8 +51,8 @@ end
 tree_avg_time = tree_avg_time / 5
 pgdm_avg_time = pgdm_avg_time / 5
 
-tree_rps = max_num / tree_avg_time 
-pgdm_rps = max_num / pgdm_avg_time 
+tree_rps = iter_num / tree_avg_time 
+pgdm_rps = iter_num / pgdm_avg_time 
 
 print('Tree RPS: ', tree_rps)
 print('Pgdm RPS: ', pgdm_rps)
