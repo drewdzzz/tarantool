@@ -46,10 +46,8 @@
 #include <small/mempool.h>
 #include <salad/pgdm.hpp>
 
-// static const unsigned EPS = 14;
-// static const unsigned DELTA = 4;
-static const unsigned EPS = 3;
-static const unsigned DELTA = 1;
+static const unsigned EPS = 16;
+static const unsigned DELTA = 4;
 
 struct memtx_pgdm_index {
 	struct index base;
