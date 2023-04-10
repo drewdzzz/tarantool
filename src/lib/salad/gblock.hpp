@@ -178,6 +178,8 @@ private:
 			a = data_.size();
 			b = data_.size();
 		}
+		assert(b >= a);
+		assert(b - a <= 2 * eps);
 		auto it = std::upper_bound(data_.begin() + a, data_.begin() + b, Cell(k, {}));
 		if (it == data_.begin()) {
 			assert(data_is_lower_bound(k, NULL));
@@ -186,7 +188,6 @@ private:
 		it--;
 		for (; it != data_.begin() && it->del; it--) {}
 		if (it->del) {
-			// std::cout << a << " " << b << std::endl;
 			assert(data_is_lower_bound(k, NULL));
 			return;
 		}
@@ -215,22 +216,10 @@ private:
 			if (b > 2 * eps)
 				a = b - 2 * eps;
 		}
-		if (b < a) {
-			std::cout << "EPS: " << EPS << std::endl;
-			std::cout << "approx pos: " << approx_pos << std::endl;
-			std::cout << "looking at [" << a << ", " << b << ")" << std::endl;
-		}
 		assert(b >= a);
+		assert(b - a <= 2 * eps);
 		auto it = std::lower_bound(data_.begin() + a, data_.begin() + b, Cell(k, {}));
 		if (it == data_.end() || it->k != k) {
-			if (data_has_key_linear(k)) {
-				std::cout << "Key: " << k << std::endl;
-				std::cout << "EPS: " << EPS << std::endl;
-				std::cout << "approx pos: " << approx_pos << std::endl;
-				std::cout << "looking at [" << a << ", " << b << ")" << std::endl;
-				std::cout << "it == data_.end() : " << (it == data_.end()) << ", it->k != k : " << (it->k != k) << std::endl;
-				print_keys();
-			}
 			assert(!data_has_key_linear(k));
 			return;
 		}
@@ -574,6 +563,7 @@ public:
 			}
 		}
 		assert(!must_del);
+		(void)must_del;
 	}
 
 	void
