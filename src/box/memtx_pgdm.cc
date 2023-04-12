@@ -214,11 +214,9 @@ memtx_pgdm_index_create_iterator(struct index *base, enum iterator_type type,
 
 /** Implementation of create_read_view index callback. */
 static struct index_read_view *
-memtx_pgdm_index_create_read_view(struct index *base,
-				  const struct read_view_opts *opts)
+memtx_pgdm_index_create_read_view(struct index *base)
 {
 	(void)base;
-	(void)opts;
 	abort();
 	return NULL;
 }
