@@ -46,8 +46,9 @@
 #include <small/mempool.h>
 #include <salad/pgdm.hpp>
 
-static const unsigned EPS = 16;
+static const unsigned EPS = 10;
 static const unsigned DELTA = 4;
+static const size_t PGDM_BLOCK_SIZE = 512;
 
 struct memtx_pgdm_index {
 	struct index base;
@@ -56,7 +57,7 @@ struct memtx_pgdm_index {
 	 * Now only integer values are supported, so number value
 	 * is a hash itself.
 	 */
-	pgdm_map<long long, struct tuple *, EPS, DELTA> *pgdm = nullptr;
+	pgdm_map<long long, EPS, DELTA, MEMTX_EXTENT_SIZE, PGDM_BLOCK_SIZE> *pgdm = nullptr;
 	struct key_def *cmp_def;
 	struct memtx_gc_task gc_task;
 };
@@ -123,11 +124,12 @@ static ssize_t
 memtx_pgdm_index_count(struct index *base, enum iterator_type type,
 		       const char *key, uint32_t part_count)
 {
+	(void)base;
 	(void)type;
 	(void)key;
 	(void)part_count;
-	struct memtx_pgdm_index *index = (struct memtx_pgdm_index *)base;
-	index->pgdm->dump();
+	// struct memtx_pgdm_index *index = (struct memtx_pgdm_index *)base;
+	// index->pgdm->dump();
 	return 0;
 }
 
@@ -150,7 +152,8 @@ memtx_pgdm_index_get_internal(struct index *base, const char *key,
 	const char **key_ptr = &key;
 	long long int_key = mp_decode_uint(key_ptr);
 	struct tuple *tuple = NULL;
-	bool found = index->pgdm->find(int_key, &tuple);
+	struct tuple **tuple_ptr = &tuple;
+	bool found = index->pgdm->find(int_key, (void **)tuple_ptr);
 	if (found) {
 		*result = memtx_tx_tuple_clarify(txn, space, tuple, base, 0);
 /********MVCC TRANSACTION MANAGER STORY GARBAGE COLLECTION BOUND START*********/
@@ -190,7 +193,7 @@ memtx_pgdm_index_replace(struct index *base, struct tuple *old_tuple,
 	}
 
 	if (new_tuple != NULL) {
-		index->pgdm->insert(int_key, new_tuple);
+		index->pgdm->insert(int_key, (void *)new_tuple);
 	}
 
 	*result = old_tuple;
@@ -261,7 +264,8 @@ memtx_pgdm_index_new(struct memtx_engine *memtx, struct index_def *def)
 			 "malloc", "struct memtx_hash_index");
 		return NULL;
 	}
-	index->pgdm = new pgdm_map<long long, struct tuple *, EPS, DELTA>;
+	index->pgdm = new pgdm_map<long long, EPS, DELTA, MEMTX_EXTENT_SIZE, PGDM_BLOCK_SIZE>(
+		memtx_index_extent_alloc, memtx_index_extent_free, memtx, &memtx->index_extent_stats);
 	if (index_create(&index->base, (struct engine *)memtx,
 			 &memtx_pgdm_index_vtab, def) != 0) {
 		free(index);

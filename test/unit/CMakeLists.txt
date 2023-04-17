@@ -570,7 +570,7 @@ create_unit_test(PREFIX getenv_safe
 )
 
 create_unit_test(PREFIX lua_utils
-                 SOURCES lua_utils.c
+		SOURCES lua_utils.c
                  LIBRARIES unit core server
                            ${LUAJIT_LIBRARIES}
                            ${CURL_LIBRARIES}
@@ -602,11 +602,11 @@ create_unit_test(PREFIX lua_tweaks
 )
 
 create_unit_test(PREFIX gblock
-                 SOURCES gblock.cc
-                 LIBRARIES small misc
+                 SOURCES gblock.cc core_test_utils.c
+                 LIBRARIES small misc unit core
 )
 
 create_unit_test(PREFIX pgdm
-                 SOURCES pgdm.cc
-                 LIBRARIES small misc
+                 SOURCES pgdm.cc core_test_utils.c
+                 LIBRARIES small misc unit core
 )

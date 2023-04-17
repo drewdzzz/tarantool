@@ -7,40 +7,158 @@
 #include <algorithm>
 #include <iostream>
 #include <cmath>
+#include "core/fiber.h"
+#include "small/matras.h"
+#include "small/region.h"
 
 #define LOW_EPS 1e-5
 
-template<class Key, class Value, unsigned EPS, unsigned DELTA>
-class GeometricBlock {
-	static_assert(DELTA > 0U, "Delta must not be zero");
-	static_assert(EPS > 0U, "Epsilon must not be zero");
-	static_assert(std::is_trivially_copyable<Key>::value, "Key must be trivially copyable");
-	static_assert(std::is_trivially_copyable<Value>::value, "Value must be trivialy copyable");
-	/* TODO: check if Key is a numeric type. */
-
-	template<class T>
-	using Collection = std::vector<T>;
+namespace internal {
+	template<class Key>
 	struct Cell {
 		Key k;
-		Value v;
+		void *v;
 		bool del = false;
-		Cell() = delete;
-		Cell(const Key &k, const Value &v) : k(k), v(v) {}
-		bool operator<(const Cell& other) const
+		Cell() = default;
+		Cell(const Key &k, void *v) : k(k), v(v) {}
+		bool operator<(const Cell<Key>& other) const
 		{
 			return k < other.k;
 		}
-		bool operator==(const Cell& other) const
+		bool operator==(const Cell<Key>& other) const
 		{
 			return k == other.k;
 		}
-		bool operator!=(const Cell& other) const
+		bool operator!=(const Cell<Key>& other) const
 		{
 			return k != other.k;
 		}
 	};
-	using CellArray = Collection<Cell>;
-	using ExtraCellArray = Collection<Cell>;
+
+	template<class Key, unsigned Capacity>
+	struct CellArray {
+		Cell<Key> arr[Capacity];
+		size_t last = 0;
+		struct CellArray *next;
+	};
+
+	template<class Key, unsigned Capacity>
+	struct DataHolder {
+		using CellArray = CellArray<Key, Capacity>;
+		using Cell = Cell<Key>;
+
+		CellArray *begin;
+		CellArray *curr;
+		size_t data_size;
+		void
+		append(const Cell& c, matras &matras) {
+			if (curr->last == Capacity) {
+				uint32_t block_num;
+				curr->next = (CellArray *)matras_alloc(&matras, &block_num);
+				memset(curr->next, 0, sizeof(CellArray));
+				curr = curr->next;
+			}
+			curr->arr[curr->last++] = c;
+			data_size++;
+		}
+		bool
+		empty(void)
+		{
+			assert(data_size != 0 || begin->last == 0);
+			return data_size == 0;
+		}
+		DataHolder(matras &matras)
+		{
+			uint32_t block_num;
+			begin = (CellArray *)matras_alloc(&matras, &block_num);
+			memset(begin, 0, sizeof(CellArray));
+			curr = begin;
+			data_size = 0;
+		}
+		Cell &
+		operator[](size_t idx) {
+			assert(idx < data_size);
+			CellArray *curr_block = begin;
+			while (idx >= Capacity) {
+				curr_block = curr_block->next;
+				idx -= Capacity;
+			}
+			return curr_block->arr[idx];
+		}
+		size_t
+		size(void)
+		{
+			return data_size;
+		}
+
+		Cell *
+		lower_bound_impl(Cell *arr, const Key &k, size_t a, size_t b)
+		{
+			assert(a < b);
+			assert(b <= Capacity);
+			Cell *it = std::upper_bound(arr + a, arr + b, Cell(k, {}));
+			if (it == arr + a)
+				return NULL;
+			--it;
+			for (;it->del && it != arr + a; it--) {}
+			if (it->del)
+				return NULL;
+			return it;
+		}
+
+		/*
+		 * The greatest elem which is less or equal to k.
+		 * Lower bound with respect to deleted elements in [a, b).
+		 */
+		Cell *
+		lower_bound(const Key &k, size_t a, size_t b)
+		{
+			assert(a < b);
+			assert(a < data_size);
+			assert(b <= data_size);
+			CellArray *curr_block = begin;
+			while (a >= Capacity) {
+				curr_block = curr_block->next;
+				a -= Capacity;
+				b -= Capacity;
+			}
+			if (b <= Capacity) {
+				/* [a, b) is placed in one block. */
+				Cell *res = lower_bound_impl(curr_block->arr, k, a, b);
+				assert(res != NULL);
+				return res;
+			} else {
+				/* [a, c) in one block and [c, b) in another one. */
+				b -= Capacity;
+				CellArray *next_block = curr_block->next;
+				Cell *res = NULL;
+				if (next_block->arr[0].k <= k)
+					res = lower_bound_impl(next_block->arr, k, 0, b);
+				if (res != NULL)
+					return res;
+				res = lower_bound_impl(curr_block->arr, k, a, Capacity);
+				assert(res != NULL);
+				return res;
+			}
+		}
+	};
+	template<class Key, unsigned Capacity>
+	struct DataPayload {
+		struct DataHolder<Key, Capacity> *data;
+		size_t size = 0;
+	};
+};
+
+template<class Key, unsigned EPS, unsigned DELTA, unsigned BLOCK_SIZE>
+class GeometricBlock {
+	static_assert(DELTA > 0U, "Delta must not be zero");
+	static_assert(EPS > 0U, "Epsilon must not be zero");
+	static_assert(std::is_trivially_copyable<Key>::value, "Key must be trivially copyable");
+	/* TODO: check if Key is a numeric type. */
+
+	template<class T>
+	using Collection = std::vector<T>;
+	using Cell = internal::Cell<Key>;
 
 	struct Point {
 		/** Just a key. */
@@ -49,11 +167,41 @@ class GeometricBlock {
 		ssize_t y;
 	};
 
+	/** Array of 2 EPS cells. */
+	using CellArray = internal::CellArray<Key, 2 * EPS>;
+	static_assert(sizeof(CellArray) <= BLOCK_SIZE, "Cell array per block");
+
+	using DataHolder = internal::DataHolder<Key, 2 * EPS>;
+	using DataPayload = internal::DataPayload<Key, 2 * EPS>;
+
+	struct ExtraHolder {
+		Cell extra[DELTA];
+		size_t last = 0;
+		size_t
+		size(void)
+		{
+			return last;
+		}
+		void
+		append(const Cell &c)
+		{
+			assert(last < DELTA);
+			extra[last++] = c;
+		}
+		Cell &
+		operator[](size_t idx) {
+			assert(idx < last);
+			return extra[idx];
+		}
+	};
+
 public:
-	GeometricBlock()
+	GeometricBlock(struct matras &matras) : matras_(matras), data_(matras), extra_()
 	{
-		data_.reserve(2 * EPS);
-		extra_.reserve(DELTA);
+		check_invariants();
+	}
+	GeometricBlock(struct matras &matras, DataHolder& data) : matras_(matras), data_(data), extra_()
+	{
 		check_invariants();
 	}
 
@@ -170,60 +318,35 @@ private:
 		if (data_.empty() || k < data_[0].k)
 			return;
 		size_t approx_pos = find_approx_pos(k);
+		size_t eps = EPS + bias_;
 		/** We need semi-interval [a, b) of possible positions. */
-		size_t a = approx_pos > EPS ? approx_pos - EPS : 0;
-		size_t b = std::min(approx_pos + EPS, data_.size() - 1) + 1;
+		size_t a = approx_pos > eps ? approx_pos - eps : 0;
+		size_t b = std::min(approx_pos + eps, data_.size() - 1) + 1;
 		/** Set to data_.end() if the element is the highest. */
 		if (b < a) {
-			a = data_.size();
-			b = data_.size();
+			assert(data_is_lower_bound(k, NULL));
+			*c = NULL;
+			return;
 		}
 		assert(b >= a);
-		assert(b - a <= 2 * eps);
-		auto it = std::upper_bound(data_.begin() + a, data_.begin() + b, Cell(k, {}));
-		if (it == data_.begin()) {
-			assert(data_is_lower_bound(k, NULL));
-			return;
-		}
-		it--;
-		for (; it != data_.begin() && it->del; it--) {}
-		if (it->del) {
-			assert(data_is_lower_bound(k, NULL));
-			return;
-		}
-		*c = &(*it);
-		assert(data_is_lower_bound(k, &it->k));
+		assert(b - a <= 2 * eps + 1);
+		*c = data_.lower_bound(k, a, b);
+		assert(data_is_lower_bound(k, *c == NULL ? NULL : &((*c)->k)));
 	}
 
 	void
 	find_impl(const Key &k, Cell **c)
 	{
-		check_invariants();
-		*c = NULL;
-		if (data_.empty() || k < data_[0].k || k > data_[data_.size() - 1].k)
-			return;
-		size_t approx_pos = find_approx_pos(k);
-		/*
-		 * Extend Epsilon to negate an error.
-		 * TODO: investigate if we can reduce additional constant.
-		 */
-		static const unsigned eps = EPS;
-		/* We need semi-interval [a, b) of possible positions. */
-		size_t a = approx_pos > eps ? approx_pos - eps : 0;
-		size_t b = std::min(approx_pos + eps, data_.size() - 1) + 1;
-		if (b == data_.size()) {
-			a = 0;
-			if (b > 2 * eps)
-				a = b - 2 * eps;
-		}
-		assert(b >= a);
-		assert(b - a <= 2 * eps);
-		auto it = std::lower_bound(data_.begin() + a, data_.begin() + b, Cell(k, {}));
-		if (it == data_.end() || it->k != k) {
+		lower_bound_impl(k, c);
+		if (*c == NULL) {
 			assert(!data_has_key_linear(k));
 			return;
 		}
-		*c = &(*it);
+		if ((*c)->k != k) {
+			assert(!data_has_key_linear(k));
+			*c = NULL;
+			return;
+		}
 		assert(data_has_key_linear(k));
 	}
 
@@ -232,7 +355,7 @@ private:
 	 * Returns false in the case key is not present in the index.
 	 */
 	bool
-	try_replace(const Key& k, const Value &v)
+	try_replace(const Key& k, void *v)
 	{
 		check_invariants();
 		Cell *cell;
@@ -252,7 +375,7 @@ private:
 	 * 2. appending (k, v) does not break convex hull constraints.
 	 */
 	bool
-	try_append(const Key& k, const Value &v)
+	try_append(const Key& k, void *v)
 	{
 		check_invariants();
 		if (!data_.empty() && k <= data_[data_.size() - 1].k)
@@ -270,14 +393,14 @@ private:
 			lower_.push_back(p2);
 			upper_start_ = 0;
 			lower_start_ = 0;
-			data_.emplace_back(k, v);
+			data_.append(Cell(k, v), matras_);
 			return true;
 		} else if (data_.size() == 1) {
 			rectangle_[2] = p2;
 			rectangle_[3] = p1;
 			upper_.push_back(p1);
 			lower_.push_back(p2);
-			data_.emplace_back(k, v);
+			data_.append(Cell(k, v), matras_);
 			return true;
 		}
 
@@ -294,7 +417,7 @@ private:
 		if (outside_line1 || outside_line2)
 			return false;
 
-		data_.emplace_back(k, v);
+		data_.append(Cell(k, v), matras_);
 
 		if (vec_cmp(rectangle_[1], p1, rectangle_[1], rectangle_[3]) < 0) {
 			/* Find extreme slope. */
@@ -348,7 +471,7 @@ private:
 	 * A helper that tries to replace in extra_.
 	 */
 	bool
-	try_replace_extra(const Key& k, const Value &v)
+	try_replace_extra(const Key& k, void *v)
 	{
 		check_invariants();
 		for (size_t i = 0; i < extra_.size(); ++i) {
@@ -365,11 +488,12 @@ private:
 	 * A helper that tries to append to extra_.
 	 */
 	bool
-	try_append_extra(const Key& k, const Value &v)
+	try_append_extra(const Key& k, void *v)
 	{
 		check_invariants();
-		if (extra_.size() < DELTA) {
-			extra_.push_back({k, v});
+		if (bias_ < DELTA) {
+			bias_++;
+			extra_.append(Cell(k, v));
 			return true;
 		}
 		return false;
@@ -385,7 +509,8 @@ private:
 		for (i = 0; i < data_.size() && data_[i].del; ++i) {}
 		assert(i != data_.size());
 		c = &data_[i];
-		for (Cell &curr : extra_) {
+		for (size_t i = 0; i < extra_.last; ++i) {
+			Cell &curr = extra_.extra[i];
 			if (!curr.del && curr.k < c->k)
 				c = &curr;
 		}
@@ -398,41 +523,47 @@ public:
 	 * If we cannot safely append it, and extra is overflowed, gblock is
 	 * shattered to smaller gblocks.
 	 */
-	Collection<GeometricBlock<Key, Value, EPS, DELTA> *>
-	insert(const Key& k, const Value& v)
+	DataPayload *
+	insert(const Key& k, void *v)
 	{
 		check_invariants();
 		if (try_replace(k ,v)) {
 			check_invariants();
-			return {};
+			return NULL;
 		}
 		if (try_replace_extra(k, v)) {
 			check_invariants();
-			return {};
+			return NULL;
 		}
 		if (try_append(k, v)) {
 			check_invariants();
-			return {};
+			return NULL;
 		}
 		if (try_append_extra(k, v)) {
 			check_invariants();
-			return {};
+			return NULL;
 		}
 		check_invariants();
 		
 		/* Append key to extra not to miss it. */
-		extra_.emplace_back(k, v);
-		/* The last action breaks invariant so this node must not be used anymore. */
+		size_t extra_len = extra_.last;
+		Cell extra[DELTA + 1];
+		memcpy(extra, extra_.extra, extra_len * sizeof(Cell));
+		extra[extra_len++] = Cell(k, v);
+		/*
+		 * This node has fallen apart so must not be used anymore.
+		 * Set debug flag for this.
+		 */
 		is_dead_ = true;
-		std::sort(extra_.begin(), extra_.end());
-		Collection<GeometricBlock<Key, Value, EPS, DELTA> *> rebuilt;
-		rebuilt.emplace_back(new GeometricBlock<Key, Value, EPS, DELTA>);
+		std::sort(extra, extra + extra_len);
+		Collection<GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE> *> rebuilt;
+		rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
 		size_t data_i = 0;
 		size_t extra_i = 0;
-		for (; data_i < data_.size() && extra_i < extra_.size();) {
-			assert(data_[data_i] != extra_[extra_i]);
+		for (; data_i < data_.size() && extra_i < extra_len;) {
+			assert(data_[data_i] != extra[extra_i]);
 			bool success;
-			if (data_[data_i] < extra_[extra_i]) {
+			if (data_[data_i] < extra[extra_i]) {
 				if (data_[data_i].del) {
 					data_i++;
 					continue;
@@ -441,18 +572,18 @@ public:
 				if (success) {
 					data_i++;
 				} else {
-					rebuilt.emplace_back(new GeometricBlock<Key, Value, EPS, DELTA>);
+					rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
 				}
 			} else {
-				if (extra_[extra_i].del) {
+				if (extra[extra_i].del) {
 					extra_i++;
 					continue;
 				}
-				success = rebuilt.back()->try_append(extra_[extra_i].k, extra_[extra_i].v);
+				success = rebuilt.back()->try_append(extra[extra_i].k, extra[extra_i].v);
 				if (success) {
 					extra_i++;
 				} else {
-					rebuilt.emplace_back(new GeometricBlock<Key, Value, EPS, DELTA>);
+					rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
 				}
 			}
 		}
@@ -466,30 +597,45 @@ public:
 			if (success) {
 				data_i++;
 			} else {
-				rebuilt.emplace_back(new GeometricBlock<Key, Value, EPS, DELTA>);
+				rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
 			}
 		}
-		for (; extra_i < extra_.size();) {
-			if (extra_[extra_i].del) {
+		for (; extra_i < extra_len;) {
+			if (extra[extra_i].del) {
 				extra_i++;
 				continue;
 			}
 			bool success;	
-			success = rebuilt.back()->try_append(extra_[extra_i].k, extra_[extra_i].v);
+			success = rebuilt.back()->try_append(extra[extra_i].k, extra[extra_i].v);
 			if (success) {
 				extra_i++;
 			} else {
-				rebuilt.emplace_back(new GeometricBlock<Key, Value, EPS, DELTA>);
+				rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
 			}
 		}
-		for (auto p : rebuilt) {
-			p->check_invariants();
+		assert(rebuilt.size() <= DELTA + 1);
+		size_t alloc_size = 0;
+		DataPayload *payload = region_alloc_object(
+			&fiber()->gc, DataPayload,
+			&alloc_size
+		);
+		payload->size = rebuilt.size();
+		payload->data = region_alloc_array(
+			&fiber()->gc, DataHolder,
+			rebuilt.size(), &alloc_size
+		);
+		for (size_t i = 0; i < rebuilt.size(); ++i) {
+			rebuilt[i]->check_invariants();
+			assert(rebuilt[i]->extra_.size() == 0);
+			payload->data[i] = rebuilt[i]->data_;
 		}
-		return rebuilt;
+		payload->size = rebuilt.size();
+		rebuilt.clear();
+		return payload;
 	}
 
 	bool
-	find(const Key& k, Value *v)
+	find(const Key& k, void **v)
 	{
 		check_invariants();
 		Cell *cell;
@@ -501,7 +647,8 @@ public:
 			return true;
 		}
 		/* Try to find in extra. */
-		for (Cell& c : extra_) {
+		for (size_t i = 0; i < extra_.last; ++i) {
+			Cell &c = extra_.extra[i];
 			if (c.k == k) {
 				*v = c.v;
 				return true;
@@ -511,7 +658,7 @@ public:
 	}
 
 	bool
-	lower_bound(const Key &k, Value *v)
+	lower_bound(const Key &k, void **v)
 	{
 		check_invariants();
 		Cell *cell;
@@ -521,7 +668,8 @@ public:
 			 * We've got a maximal element which is LEQ to a given key.
 			 * Let's search for a bigger element that is lower than k.
 			 */
-			for (Cell &c : extra_) {
+			for (size_t i = 0; i < extra_.last; ++i) {
+				Cell &c = extra_.extra[i];
 				if (!c.del && c.k > cell->k && c.k <= k)
 					cell = &c;
 			}
@@ -532,7 +680,8 @@ public:
 			 * No elements that LEQ than k in data_.
 			 * Let's scan extra_.
 			 */
-			for (Cell &c : extra_) {
+			for (size_t i = 0; i < extra_.last; ++i) {
+				Cell &c = extra_.extra[i];
 				if (!c.del && c.k <= k && (cell == NULL || c.k > cell->k)) {
 					cell = &c;
 				}
@@ -552,10 +701,13 @@ public:
 		find_impl(k, &cell);
 		if (cell != NULL) {
 			assert(!must_del || !cell->del);
+			if (!cell->del)
+				bias_++;
 			cell->del = true;
 			return;
 		}
-		for (Cell &c : extra_) {
+		for (size_t i = 0; i < extra_.size(); ++i) {
+			Cell &c = extra_[i];
 			if (c.k == k) {
 				assert(!must_del || !c.del);
 				c.del = true;
@@ -607,7 +759,7 @@ public:
 	/**
 	 * NB: use only when block is not empty.
 	 */
-	Value &
+	void *&
 	origin_value()
 	{
 		check_invariants();
@@ -663,11 +815,11 @@ public:
 		return vec;
 	}
 
-	Collection<Value>
+	Collection<void *>
 	get_values()
 	{
 		check_invariants();
-		std::vector<Value> vec;
+		std::vector<void *> vec;
 		for (size_t  i = 0; i < data_.size(); ++i) {
 			if (data_[i].del)
 				continue;
@@ -684,7 +836,7 @@ public:
 	void
 	check_invariants()
 	{
-		assert(extra_.size() <= DELTA);
+		assert(bias_ <= DELTA);
 		assert(!is_dead_);
 	}
 
@@ -696,14 +848,30 @@ public:
 		return data_[0].k;
 	}
 
+	bool
+	is_leaf()
+	{
+		return is_leaf_;
+	}
+
+	void
+	set_leaf()
+	{
+		is_leaf_ = true;
+	}
+
 private:
-	CellArray data_;
-	ExtraCellArray extra_;
+	struct matras &matras_;
+	DataHolder data_;
+	ExtraHolder extra_;
+	/* Number of tombstones in data + extra elements. */
+	size_t bias_ = 0;
 	Collection<Point> upper_;
 	Collection<Point> lower_;
 	size_t upper_start_;
 	size_t lower_start_;
 	Point rectangle_[4];
 	bool is_dead_ = false;
+	bool is_leaf_ = false;
 };
 
