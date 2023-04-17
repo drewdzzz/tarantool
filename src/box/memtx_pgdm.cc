@@ -46,9 +46,11 @@
 #include <small/mempool.h>
 #include <salad/pgdm.hpp>
 
-static const unsigned EPS = 10;
+static const unsigned EPS = 16;
 static const unsigned DELTA = 4;
 static const size_t PGDM_BLOCK_SIZE = 512;
+
+using namespace pgdm;
 
 struct memtx_pgdm_index {
 	struct index base;

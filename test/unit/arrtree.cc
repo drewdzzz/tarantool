@@ -75,7 +75,7 @@ extent_free(void *ctx, void *extent)
 static void
 test_basic()
 {
-	internal::ArrayTree<long long, BLOCK_SIZE> arr(matras);
+	pgdm::internal::ArrayTree<long long, BLOCK_SIZE> arr(matras);
 	for (int i = 0; i < 16; i += 2)
 		arr.append(i, NULL);
 	for (int i = 16; i < 1024 * 512; i += 2) {
@@ -83,7 +83,7 @@ test_basic()
 		int k = i - 2;
 		size_t a = i / 2 - 8;
 		size_t b = i / 2;
-		internal::Cell<long long> *it = arr.find(k, a, b);
+		pgdm::internal::Cell<long long> *it = arr.find(k, a, b);
 		TEST_CHECK_NEQ(it, NULL);
 		TEST_CHECK_EQ(it->k, i - 2);
 		k = i - 1;
