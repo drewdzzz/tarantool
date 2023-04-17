@@ -610,3 +610,8 @@ create_unit_test(PREFIX pgdm
                  SOURCES pgdm.cc core_test_utils.c
                  LIBRARIES small misc unit core
 )
+
+create_unit_test(PREFIX arrtree
+                 SOURCES arrtree.cc core_test_utils.c
+                 LIBRARIES small misc unit core
+)
