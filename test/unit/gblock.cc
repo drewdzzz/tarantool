@@ -50,8 +50,10 @@
 static int extents_count = 0;
 struct matras matras;
 struct matras_view view;
-#define EXTENT_SIZE (32 * 1024)
-#define BLOCK_SIZE (1024)
+using Key = long long;
+#define EXTENT_SIZE (16 * 1024)
+#define BLOCK_SIZE (512)
+#define EPSILON 16
 
 static void *
 extent_alloc(void *ctx)
@@ -74,7 +76,7 @@ extent_free(void *ctx, void *extent)
 static void
 test_linear_infinity(void)
 {
-	GeometricBlock<int, 16, 1, BLOCK_SIZE> block(matras);
+	GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE> block(matras);
 	for (int i = 0; i < 2048; ++i) {
 		void *v = static_cast<void *>(new int(i));
 		auto res = block.insert(i, v);
@@ -85,7 +87,7 @@ test_linear_infinity(void)
 static void
 test_linear_infinity_with_offset(void)
 {
-	GeometricBlock<int, 16, 1, BLOCK_SIZE> block(matras);
+	GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE> block(matras);
 	for (int i = 0; i < 2048; ++i) {
 		void *v = static_cast<void *>(new int(i));
 		auto res = block.insert(i + 8144, v);
@@ -96,14 +98,14 @@ test_linear_infinity_with_offset(void)
 static void
 test_guaranteed_capacity_impl(void)
 {
-	auto *block = new GeometricBlock<int, 16, 1, BLOCK_SIZE>(matras);
+	auto *block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras);
 	for (int i = 0; i < 16 * 2; ++i) {
 		int k = rand() % 65536;
 		void *v = static_cast<void *>(new int(i));
 		auto res = block->insert(k, v);
 		TEST_CHECK(res == NULL || res->size == 1);
 		if (res != NULL) {
-			block = new GeometricBlock<int, 16, 1, BLOCK_SIZE>(matras, res->data[0]);
+			block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras, res->data[0]);
 		}
 	}
 }
@@ -119,14 +121,14 @@ test_guaranteed_capacity()
 static void
 test_replaces_impl()
 {
-	auto *block = new GeometricBlock<int, 16, 1, BLOCK_SIZE>(matras);
+	auto *block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras);
 	for (int i = 0; i < 16 * 2; ++i) {
 		int k = rand() % 256;
 		void *v = static_cast<void *>(new int(i));
 		auto res = block->insert(k, v);
 		TEST_CHECK(res == NULL || res->size == 1);
 		if (res != NULL) {
-			block = new GeometricBlock<int, 16, 1, BLOCK_SIZE>(matras, res->data[0]);
+			block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras, res->data[0]);
 		}
 	}
 }
@@ -142,8 +144,8 @@ test_replaces()
 static void
 test_linear_replaces()
 {
-	GeometricBlock<int, 2, 1, BLOCK_SIZE> block(matras);	
-	for (int i = 0; i < 16; ++i) {
+	GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE> block(matras);	
+	for (int i = 0; i < EPSILON * 100; ++i) {
 		void *v = static_cast<void *>(new int(i));
 		auto res = block.insert(i * 40, v);
 		TEST_CHECK_EQ(res, NULL);
@@ -158,7 +160,7 @@ test_linear_replaces()
 static void
 test_find_linear()
 {
-	GeometricBlock<int, 16, 1, BLOCK_SIZE> block(matras);
+	GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE> block(matras);
 	for (int i = 0; i < 256; i += 2) {
 		void *v = static_cast<void *>(new int(i));
 		auto res = block.insert(i, v);
@@ -182,7 +184,7 @@ test_find_linear()
 static void
 test_find_impl()
 {
-	auto *block = new GeometricBlock<int, 16, 2, BLOCK_SIZE>(matras);
+	auto *block = new GeometricBlock<Key, EPSILON, 2, BLOCK_SIZE>(matras);
 	std::map<int, int> used;
 	std::set<int> unused;
 	for (int i = 0; i < 4; ++i) {
@@ -198,7 +200,7 @@ test_find_impl()
 		auto res = block->insert(k, v);
 		TEST_CHECK(res == NULL || res->size == 1);
 		if (res != NULL) {
-			block = new GeometricBlock<int, 16, 2, BLOCK_SIZE>(matras, res->data[0]);
+			block = new GeometricBlock<Key, EPSILON, 2, BLOCK_SIZE>(matras, res->data[0]);
 		}
 	}
 
@@ -226,16 +228,16 @@ test_find()
 static void
 test_sparse()
 {
-	auto *block = new GeometricBlock<int, 8, 1, BLOCK_SIZE>(matras);
+	auto *block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras);
 	std::map<int, int> used;
-	for (int i = 0; i < 16; ++i) {
+	for (int i = 0; i < 32; ++i) {
 		int k = rand() % 2048;
 		used[k] = i;
 		void *v = new int(i);
 		auto res = block->insert(k, v);
 		TEST_CHECK(res == NULL || res->size == 1);
 		if (res != NULL) {
-			block = new GeometricBlock<int, 8, 1, BLOCK_SIZE>(matras, res->data[0]);
+			block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras, res->data[0]);
 		}
 	}
 }

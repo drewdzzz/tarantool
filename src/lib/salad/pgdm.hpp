@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include "gblock.hpp"
 
+namespace pgdm {
+
 template<class Key, unsigned EPS, unsigned DELTA, unsigned EXTENT_SIZE, unsigned BLOCK_SIZE>
 class pgdm_map {
 	static_assert(DELTA > 0U, "Delta must not be zero");
@@ -11,13 +13,14 @@ class pgdm_map {
 	static_assert(std::is_trivially_copyable<Key>::value, "Key must be trivially copyable");
 	/* TODO: check if Key is a numeric type. */
 
+	static_assert(2 * EPS * sizeof(internal::Cell<Key>) == BLOCK_SIZE, "EPS is consistent with BLOCK_SIZE");
 	static_assert(EXTENT_SIZE % BLOCK_SIZE == 0, "Extent size must be divisible by block size");
 
 	template<class T>
 	using Collection = std::vector<T>;
 
-	using DataHolder = internal::DataHolder<Key, 2 * EPS>;
-	using DataPayload = internal::DataPayload<Key, 2 * EPS>;
+	using ArrayTree = internal::DataPayload<Key, BLOCK_SIZE>;
+	using DataPayload = internal::DataPayload<Key, BLOCK_SIZE>;
 	using Node = GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>;
 
 	Collection<Node *>
@@ -240,4 +243,6 @@ private:
 	struct matras matras_;
 	struct matras_view view_;
 	Node *root_;
+};
+
 };
