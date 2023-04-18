@@ -58,68 +58,50 @@ public:
 		assert(root_ != NULL);
 		Node *curr = root_;
 		std::stack<Node *> s;
-		// std::cout << "------ Starting Insert of " << k << " ------" << std::endl;
 		while (!curr->is_leaf()) {
 			assert(curr != NULL);
-			// std::cout << "Descending to leaf" << std::endl;
 			s.push(curr);
 			Node *next = NULL;
 			Node **next_ptr = &next;
 			bool found = curr->lower_bound(k, (void **)next_ptr);
 			assert(!found || next != NULL);
 			if (!found) {
-				// std::cout << "Lower bound didn't help, getting the first node" << std::endl;
 				next = static_cast<Node *>(curr->origin_value());
 				assert(next != NULL);
 			}
 			assert(next != NULL);
 			curr = next;
-			// std::cout << "Descending iteration done" << std::endl;
-			// std::cout << "New curr: " << curr << std::endl;
-			// dump_node(curr);
 		}
-		// std::cout << "Leaf has been found" << std::endl;
-		assert(curr != NULL);
 		assert(curr->is_leaf());
 		Collection<Node *> new_nodes{};
 		{
 			DataPayload* new_parts = curr->insert(k, v);
-			// std::cout << "After insert leaf has fallen to " << new_parts.size() << " parts" << std::endl;
 			if (new_parts == NULL)
 				return;
 			assert(new_parts->size > 0);
-			/*
-			 * TODO: it is not truth actually - since we introduced
-			 * tombstones, number of fragments can be much bigger.
-			 * We should count deleted elemets together with size of
-			 * extra_ to get that guarantee on parts number.
-			 */
 			assert(new_parts->size <= DELTA + 1);
 			new_nodes = payload_to_nodes(new_parts);
 			for (size_t i = 0; i < new_nodes.size(); ++i)
 				new_nodes[i]->set_leaf();
 		}
 		while (!s.empty() && !new_nodes.empty()) {
-			// std::cout << "Start inserting to ancestor " << new_parts.size() << " parts" << std::endl;
 			/*
 			 * Current node has fell apart, so we need to delete
 			 * its old version from the parent.
 			 */
 			auto parent = s.top();
-			parent->del_checked(curr->start_key());
+			s.pop();
 			Collection<Node *> curr_new_nodes = {};
 			size_t i = 0;
 			{
-				DataPayload *curr_new_parts = NULL;
-				curr = s.top();
-				s.pop();
+				DataPayload *curr_new_parts = parent->del_checked(curr->start_key());
+				curr = parent;
 				for (; i < new_nodes.size() && curr_new_parts == NULL; ++i) {
 					Node *new_node = new_nodes[i];
 					curr_new_parts =
-						curr->insert(new_node->origin_key(), new_node);
+						curr->insert(new_node->start_key(), new_node);
 				}
 				if (curr_new_parts == NULL) {
-					// std::cout << "Stop inserting to ancestor - no additional steps required" << std::endl;
 					new_nodes.clear();
 					break;
 				}
@@ -128,15 +110,13 @@ public:
 				curr_new_nodes = payload_to_nodes(curr_new_parts);
 			}
 			if (i == new_nodes.size()) {
-				// std::cout << "Keep inserting - the last node fell apart" << std::endl;
 				new_nodes = std::move(curr_new_nodes);
 				continue;
 			}
-			// std::cout << "Keep inserting" << std::endl;
 			for (; i < new_nodes.size(); ++i) {
 				size_t insert_idx = 0;
 				Node *new_node = new_nodes[i];
-				auto &curr_key = new_node->origin_key();
+				auto &curr_key = new_node->start_key();
 				while (insert_idx < curr_new_nodes.size() &&
 				       curr_key <= curr_new_nodes[insert_idx]->origin_key()) {
 					insert_idx++;
@@ -155,9 +135,7 @@ public:
 		 * root of our index has fallen apart. Create a new one.
 		 */
 		if (s.empty() && !new_nodes.empty()) {
-			// std::cout << "Stack is empty while new_parts is not - " << new_parts.size() << " nodes left" << std::endl;
 			if (new_nodes.size() == 1) {
-				// std::cout << "Just re-assign root" << std::endl;
 				root_ = new_nodes[0];
 				return;
 			}

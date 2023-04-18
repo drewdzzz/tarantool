@@ -4,7 +4,7 @@ local t = require('luatest')
 local g = t.group()
 
 g.before_all(function(cg)
-    cg.server = server:new({alias = 'master'})
+    cg.server = server:new({alias = 'master', box_cfg = {memtx_memory = 1024 * 1024 * 1024}})
     cg.server:start()
 end)
 
@@ -12,17 +12,11 @@ g.after_all(function(cg)
     cg.server:stop()
 end)
 
--- seed 777, iter_num 30, eps 3, delta 1 - segfault
--- seed 1680250185, iter_num 100, eps 3, delta 1 - find_apporx_pos failed.
--- seed 1680252743, iter_num 100, eps 3, delta 1 - just did not find.
---
-g.test_random_1e2 = function(cg)
+g.test_random_1e5 = function(cg)
     cg.server:exec(function()
-        -- local seed = os.time()
-        -- print("Seed: ", seed)
-        -- math.randomseed(seed)
-        math.randomseed(1680252743)
-        local iter_num = 100
+        local seed = os.time()
+        math.randomseed(seed)
+        local iter_num = 5e5
         local max_num = 10 * iter_num
 
         local data = {}

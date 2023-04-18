@@ -1,37 +1,32 @@
 require('os').execute('rm *.xlog *.snap')
 clock = require('clock')
 box.cfg{memtx_memory = 1024 * 1024 * 1024}
-s = box.schema.space.create('select_tester')
-s:create_index('pk')
-sk = s:create_index('sk', {type = 'pgdm'})
-local iter_num = 1e5
-
-data = {}
-for i = 1, iter_num do
-	local pos = math.random(1, #data + 1)
-	table.insert(data, pos, i)
-end
-
-for i = 1, iter_num do
-	s:replace{data[i]}
-end
-
-function bench_tree()
-	for i = 1, iter_num do
-		s:get{i}
+s = nil
+sk = nil
+function reset(type)
+	if s ~= nil then
+		s:drop()
+	end
+	s = box.schema.space.create('select_tester')
+	s:create_index('pk')
+	if type ~= nil then
+		sk = s:create_index('sk', {type = type})
 	end
 end
+local iter_num = 1e5
 
-function bench_pgdm()
+function bench()
 	for i = 1, iter_num do
-		sk:get{i}
+		s:replace{i}
 	end
 end
 
 -- Warmup
-for i = 1, 3 do
-	bench_tree()
-	bench_pgdm()
+for i = 1, 2 do
+	reset('tree')
+	bench()
+	reset('pgdm')
+	bench()
 end
 
 tree = {}
@@ -40,10 +35,14 @@ pgdm = {}
 exp_num = 5
 
 for i = 1, exp_num do
-	time = clock.bench(bench_tree)[1]
+	reset()
+	idle = clock.bench(bench)[1]
+	reset('tree')
+	time = clock.bench(bench)[1]
 	table.insert(tree, time)
 	print('Tree: ', time)
-	time = clock.bench(bench_pgdm)[1]
+	reset('pgdm')
+	time = clock.bench(bench)[1]
 	table.insert(pgdm, time)
 	print('Pgdm: ', time)
 end

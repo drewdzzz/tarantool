@@ -49,6 +49,7 @@ template<class Key, unsigned EPS, unsigned DELTA, unsigned BLOCK_SIZE>
 class GeometricBlock {
 	static_assert(DELTA > 0U, "Delta must not be zero");
 	static_assert(EPS > 0U, "Epsilon must not be zero");
+	static_assert(DELTA < 2 * EPS, "Extra data must fit into block");
 	static_assert(std::is_trivially_copyable<Key>::value, "Key must be trivially copyable");
 	/* TODO: check if Key is a numeric type. */
 
@@ -64,7 +65,7 @@ class GeometricBlock {
 
 	/** Array of DELTA cells. */
 	struct ExtraHolder {
-		Cell extra[DELTA];
+		Cell extra[DELTA + 1];
 		size_t last = 0;
 		size_t
 		size(void)
@@ -101,6 +102,8 @@ public:
 	}
 
 private:
+
+	size_t cur_delta(void) { return bias_ + extra_.size(); };
 
 	/** 
 	 * Compare slopes between a1->a2 and b1->b2:
@@ -164,7 +167,7 @@ private:
 	}
 
 	/**
-	 * A linear check that data_ contains a key. 
+	 * A linear check that data_ contains a key.
 	 * NB: Use for debug only!
 	 */
 	bool
@@ -183,7 +186,7 @@ private:
 	 * NB: use for debug only!
 	 */
 	bool
-	data_is_lower_bound(const Key &k, const Key *lb)
+	data_is_lower_bound(const Key &k, const Key *lb, bool find_deleted = false)
 	{
 		check_invariants();
 		size_t i = 0;
@@ -196,9 +199,13 @@ private:
 		}
 		--i;
 		/** Rewind to the last deleted elem. */
-		for (; i > 0 && data_[i].is_deleted(); --i) {}
-		return (lb != NULL && data_[i].k == *lb && !data_[i].is_deleted()) ||
-		       (lb == NULL && data_[i].is_deleted());
+		if (!find_deleted) {
+			for (; i > 0 && data_[i].is_deleted(); --i) {}
+			return (lb != NULL && data_[i].k == *lb && !data_[i].is_deleted()) ||
+			(lb == NULL && data_[i].is_deleted());
+		} else {
+			return lb != NULL && data_[i].k == *lb;
+		}
 	}
 
 	/*
@@ -206,7 +213,7 @@ private:
 	 * NB: with respect to tombstones.
 	 */
 	void
-	lower_bound_impl(const Key &k, Cell **c)
+	lower_bound_impl(const Key &k, Cell **c, bool find_deleted = false)
 	{
 		check_invariants();
 		*c = NULL;
@@ -223,22 +230,14 @@ private:
 		}
 		assert(b >= a);
 		assert(b - a <= 2 * eps + 1);
-		*c = data_.lower_bound(k, a, b);
-		if (!data_is_lower_bound(k, *c == NULL ? NULL : &((*c)->k))) {
-			std::cout << "trying to find: " << k << " in [" << a << ", " << b << ")" << std::endl;
-			std::cout << "approx pos: " << approx_pos << std::endl;
-			for (size_t i = 0; i < data_.size(); ++i)
-				std::cout << data_[i].k << std::endl;
-			if (*c != NULL)
-				std::cout << (*c)->k << std::endl;
-		}
-		assert(data_is_lower_bound(k, *c == NULL ? NULL : &((*c)->k)));
+		*c = data_.lower_bound(k, a, b, find_deleted);
+		assert(data_is_lower_bound(k, *c == NULL ? NULL : &((*c)->k), find_deleted));
 	}
 
 	void
 	find_impl(const Key &k, Cell **c)
 	{
-		lower_bound_impl(k, c);
+		lower_bound_impl(k, c, true);
 		if (*c == NULL) {
 			assert(!data_has_key_linear(k));
 			return;
@@ -262,6 +261,8 @@ private:
 		Cell *cell;
 		find_impl(k, &cell);
 		if (cell != NULL) {
+			if (cell->is_deleted())
+				bias_--;
 			cell->v = v;
 			return true;
 		}
@@ -390,8 +391,7 @@ private:
 	try_append_extra(const Key& k, void *v)
 	{
 		check_invariants();
-		if (bias_ < DELTA) {
-			bias_++;
+		if (cur_delta() < DELTA) {
 			extra_.append(Cell(k, v));
 			return true;
 		}
@@ -415,6 +415,151 @@ private:
 		}
 		return *c;
 	}
+
+	DataPayload *
+	fall_apart(void)
+	{
+		/*
+		 * This node has fallen apart so must not be used anymore.
+		 * Set debug flag for this.
+		 */
+		assert(!is_dead_);
+		is_dead_ = true;
+		Cell *extra = extra_.extra;
+		size_t extra_len = extra_.size();
+		assert(bias_ <= data_.size());
+		size_t alloc_size = 0;
+		DataPayload *payload = region_alloc_object(
+			&fiber()->gc, DataPayload,
+			&alloc_size
+		);
+
+		if (data_.size() == bias_ && extra_len == 0) {
+			payload->data = NULL;
+			payload->size = 0;
+			return payload;
+		}
+		std::sort(extra, extra + extra_len);
+		Collection<GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE> *> rebuilt {};
+		rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
+		size_t data_i = 0;
+		size_t extra_i = 0;
+		for (; data_i < data_.size() && extra_i < extra_len;) {
+			assert(data_[data_i] != extra[extra_i]);
+			bool success;
+			if (data_[data_i] < extra[extra_i]) {
+				if (data_[data_i].is_deleted()) {
+					data_i++;
+					continue;
+				}
+				success = rebuilt.back()->try_append(data_[data_i].k, data_[data_i].v);
+				if (success) {
+					data_i++;
+				} else {
+					assert(!rebuilt.back()->data_.empty());
+					rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
+				}
+			} else {
+				if (extra[extra_i].is_deleted()) {
+					extra_i++;
+					continue;
+				}
+				success = rebuilt.back()->try_append(extra[extra_i].k, extra[extra_i].v);
+				if (success) {
+					extra_i++;
+				} else {
+					assert(!rebuilt.back()->data_.empty());
+					rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
+				}
+			}
+		}
+		for (; data_i < data_.size();) {
+			if (data_[data_i].is_deleted()) {
+				data_i++;
+				continue;
+			}
+			bool success;	
+			success = rebuilt.back()->try_append(data_[data_i].k, data_[data_i].v);
+			if (success) {
+				data_i++;
+			} else {
+				assert(!rebuilt.back()->data_.empty());
+				rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
+			}
+		}
+		for (; extra_i < extra_len;) {
+			if (extra[extra_i].is_deleted()) {
+				extra_i++;
+				continue;
+			}
+			bool success;	
+			success = rebuilt.back()->try_append(extra[extra_i].k, extra[extra_i].v);
+			if (success) {
+				extra_i++;
+			} else {
+				assert(!rebuilt.back()->data_.empty());
+				rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
+			}
+		}
+		assert(rebuilt.size() <= DELTA + 1);
+		payload->size = rebuilt.size();
+		payload->data = region_alloc_array(
+			&fiber()->gc, DataPayloadUnit,
+			rebuilt.size(), &alloc_size
+		);
+		memset(payload->data, 0, alloc_size);
+		for (size_t i = 0; i < rebuilt.size(); ++i) {
+			rebuilt[i]->check_invariants();
+			assert(rebuilt[i]->extra_.size() == 0);
+			assert(rebuilt[i]->data_.size() > 0);
+			DataPayloadUnit *unit = &payload->data[i];
+			unit->data = rebuilt[i]->data_;
+			unit->lower_ = std::move(rebuilt[i]->lower_);
+			unit->upper_ = std::move(rebuilt[i]->upper_);
+			unit->lower_start_ = rebuilt[i]->lower_start_;
+			unit->upper_start_ = rebuilt[i]->upper_start_;
+			for (size_t j = 0; j < 4; ++j)
+				unit->rectangle_[j] = rebuilt[i]->rectangle_[j];
+		}
+		payload->size = rebuilt.size();
+		rebuilt.clear();
+		return payload;
+	}
+
+	DataPayload *
+	del_impl(const Key &k, bool must_del)
+	{
+		check_invariants();
+		Cell *cell;
+		find_impl(k, &cell);
+		if (cell != NULL) {
+			assert(!must_del || !cell->is_deleted());
+			if (!cell->is_deleted()) {
+				bias_++;
+				if (cur_delta() > DELTA) {
+					cell->del();
+					return fall_apart();
+				}
+			}
+			cell->del();
+			return NULL;
+		}
+		for (size_t i = 0; i < extra_.size(); ++i) {
+			Cell &c = extra_[i];
+			if (c.k == k) {
+				assert(!c.is_deleted());
+				c.del();
+				if (i != extra_.size() - 1)
+					std::swap(c, extra_[extra_.size() - 1]);
+				extra_.last--;
+				return NULL;
+			}
+		}
+		assert(!must_del);
+		(void)must_del;
+		return NULL;
+	}
+
 
 public:
 	/**
@@ -445,100 +590,8 @@ public:
 		check_invariants();
 		
 		/* Append key to extra not to miss it. */
-		size_t extra_len = extra_.last;
-		Cell extra[DELTA + 1];
-		memcpy(extra, extra_.extra, extra_len * sizeof(Cell));
-		extra[extra_len++] = Cell(k, v);
-		/*
-		 * This node has fallen apart so must not be used anymore.
-		 * Set debug flag for this.
-		 */
-		is_dead_ = true;
-		std::sort(extra, extra + extra_len);
-		Collection<GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE> *> rebuilt;
-		rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
-		size_t data_i = 0;
-		size_t extra_i = 0;
-		for (; data_i < data_.size() && extra_i < extra_len;) {
-			assert(data_[data_i] != extra[extra_i]);
-			bool success;
-			if (data_[data_i] < extra[extra_i]) {
-				if (data_[data_i].is_deleted()) {
-					data_i++;
-					continue;
-				}
-				success = rebuilt.back()->try_append(data_[data_i].k, data_[data_i].v);
-				if (success) {
-					data_i++;
-				} else {
-					rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
-				}
-			} else {
-				if (extra[extra_i].is_deleted()) {
-					extra_i++;
-					continue;
-				}
-				success = rebuilt.back()->try_append(extra[extra_i].k, extra[extra_i].v);
-				if (success) {
-					extra_i++;
-				} else {
-					rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
-				}
-			}
-		}
-		for (; data_i < data_.size();) {
-			if (data_[data_i].is_deleted()) {
-				data_i++;
-				continue;
-			}
-			bool success;	
-			success = rebuilt.back()->try_append(data_[data_i].k, data_[data_i].v);
-			if (success) {
-				data_i++;
-			} else {
-				rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
-			}
-		}
-		for (; extra_i < extra_len;) {
-			if (extra[extra_i].is_deleted()) {
-				extra_i++;
-				continue;
-			}
-			bool success;	
-			success = rebuilt.back()->try_append(extra[extra_i].k, extra[extra_i].v);
-			if (success) {
-				extra_i++;
-			} else {
-				rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
-			}
-		}
-		assert(rebuilt.size() <= DELTA + 1);
-		size_t alloc_size = 0;
-		DataPayload *payload = region_alloc_object(
-			&fiber()->gc, DataPayload,
-			&alloc_size
-		);
-		payload->size = rebuilt.size();
-		payload->data = region_alloc_array(
-			&fiber()->gc, DataPayloadUnit,
-			rebuilt.size(), &alloc_size
-		);
-		memset(payload->data, 0, alloc_size);
-		for (size_t i = 0; i < rebuilt.size(); ++i) {
-			rebuilt[i]->check_invariants();
-			assert(rebuilt[i]->extra_.size() == 0);
-			DataPayloadUnit *unit = &payload->data[i];
-			unit->data = rebuilt[i]->data_;
-			unit->lower_ = std::move(rebuilt[i]->lower_);
-			unit->upper_ = std::move(rebuilt[i]->upper_);
-			unit->lower_start_ = rebuilt[i]->lower_start_;
-			unit->upper_start_ = rebuilt[i]->upper_start_;
-			for (size_t j = 0; j < 4; ++j)
-				unit->rectangle_[j] = rebuilt[i]->rectangle_[j];
-		}
-		payload->size = rebuilt.size();
-		rebuilt.clear();
-		return payload;
+		extra_.extra[extra_.last++] = Cell(k, v);
+		return fall_apart();
 	}
 
 	bool
@@ -548,15 +601,17 @@ public:
 		Cell *cell;
 		find_impl(k, &cell);
 		if (cell != NULL) {
-			if (cell->is_deleted())
+			if (cell->is_deleted()) {
+				*v = NULL;
 				return false;
+			}
 			*v = cell->v;
 			return true;
 		}
 		/* Try to find in extra. */
 		for (size_t i = 0; i < extra_.last; ++i) {
 			Cell &c = extra_.extra[i];
-			if (c.k == k) {
+			if (c.k == k && !c.is_deleted()) {
 				*v = c.v;
 				return true;
 			}
@@ -600,41 +655,16 @@ public:
 		}
 	}
 
-	void
-	del_impl(const Key &k, bool must_del)
-	{
-		check_invariants();
-		Cell *cell;
-		find_impl(k, &cell);
-		if (cell != NULL) {
-			assert(!must_del || !cell->is_deleted());
-			if (!cell->is_deleted())
-				bias_++;
-			cell->del();
-			return;
-		}
-		for (size_t i = 0; i < extra_.size(); ++i) {
-			Cell &c = extra_[i];
-			if (c.k == k) {
-				assert(!must_del || !c.is_deleted());
-				c.del();
-				return;
-			}
-		}
-		assert(!must_del);
-		(void)must_del;
-	}
-
-	void
+	DataPayload *
 	del(const Key &k)
 	{
-		del_impl(k, false);
+		return del_impl(k, false);
 	}
 	
-	void
+	DataPayload *
 	del_checked(const Key &k)
 	{
-		del_impl(k, true);
+		return del_impl(k, true);
 	}
 
 	bool
@@ -743,8 +773,9 @@ public:
 	void
 	check_invariants()
 	{
-		assert(bias_ <= DELTA);
+		assert(cur_delta() <= DELTA);
 		assert(!is_dead_);
+		assert(bias_ <= data_.size());
 	}
 
 	const Key &
