@@ -65,7 +65,7 @@ namespace internal {
 		 * Lower bound in [a, b), segment is placed in one block.
 		 */
 		Cell *
-		lower_bound_impl(const Key &k, size_t a, size_t b)
+		lower_bound_impl(const Key &k, size_t a, size_t b, bool return_deleted)
 		{
 			assert(a <= b);
 			if (a == b)
@@ -77,6 +77,8 @@ namespace internal {
 			if (it == begin)
 				return NULL;
 			--it;
+			if (return_deleted)
+				return it;
 			for (; it->is_deleted() && it != begin; it--) {}
 			if (it->is_deleted())
 				return NULL;
@@ -137,22 +139,38 @@ namespace internal {
 		 * Lower bound with respect to deleted elements in [a, b).
 		 */
 		Cell *
-		lower_bound(const Key &k, size_t a, size_t b)
+		lower_bound(const Key &k, size_t a, size_t b, bool return_deleted = false)
 		{
 			assert(a < b);
 			assert(b <= size_);
-			assert(b - a <= lvl3_size + 1);
+			assert(b - a <= 2 * lvl3_size + 1);
 			if (a / lvl3_size == (b - 1) / lvl3_size) {
-				return lower_bound_impl(k, a, b);
-			} else {
+				return lower_bound_impl(k, a, b, return_deleted);
+			} else if (a / lvl3_size + 1 == (b - 1) / lvl3_size) {
+				/* [a, b) is in two blocks. */
 				size_t c = (a / lvl3_size + 1) * lvl3_size;
-				Cell *it = lower_bound_impl(k, c, b);
+				Cell *it = lower_bound_impl(k, c, b, return_deleted);
 				if (it == NULL || it->k > k)
-					it = lower_bound_impl(k, a, c);
+					it = lower_bound_impl(k, a, c, return_deleted);
+				return it;
+			} else {
+				/* [a, b) is in three blocks. */
+				assert(a / lvl3_size + 2 == (b - 1) / lvl3_size);
+				size_t c1 = (a / lvl3_size + 1) * lvl3_size;
+				size_t c2 = c1 + lvl3_size;
+				Cell *it = lower_bound_impl(k, c2, b, return_deleted);
+				if (it == NULL || it->k > k) {
+					it = lower_bound_impl(k, c1, c2, return_deleted);
+					if (it == NULL || it->k > k)
+						it = lower_bound_impl(k, a, c1, return_deleted);	
+				}
 				return it;
 			}
 		}
 
+		/**
+		 * Find cell.
+		 */
 		Cell *
 		find(const Key &k, size_t a, size_t b)
 		{
@@ -161,13 +179,14 @@ namespace internal {
 				it = NULL;
 			return it;
 		}
-
+		/** With no respect to deleted elems. */
 		size_t size(void) { return size_; }
 		bool empty(void) { return size_ == 0; }
 
 	private:
 		/** ID of root */
 		matras_id_t arr_;
+		/** With no respect to deleted elems. */
 		uint32_t size_ = 0;
 		struct matras *matras_;
 	};

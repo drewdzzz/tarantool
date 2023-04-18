@@ -19,7 +19,7 @@ end
 
 require('os').execute('rm *.xlog *.snap')
 clock = require('clock')
-box.cfg{}
+box.cfg{memtx_memory = 1024 * 1024 * 1024}
 s = box.schema.space.create('select_tester')
 s:create_index('pk')
 sk = s:create_index('sk', {type = 'pgdm'})
