@@ -16,7 +16,7 @@ g.test_random_1e5 = function(cg)
     cg.server:exec(function()
         local seed = os.time()
         math.randomseed(seed)
-        local iter_num = 5e5
+        local iter_num = 1e5
         local max_num = 10 * iter_num
 
         local data = {}

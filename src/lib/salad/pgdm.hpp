@@ -113,15 +113,19 @@ public:
 				new_nodes = std::move(curr_new_nodes);
 				continue;
 			}
+			size_t insert_idx = 0;
 			for (; i < new_nodes.size(); ++i) {
-				size_t insert_idx = 0;
 				Node *new_node = new_nodes[i];
 				auto &curr_key = new_node->start_key();
+				/*
+				 * curr new parts: [[0], [5], [10]]
+				 * new parts: 15
+				 */
 				while (insert_idx < curr_new_nodes.size() &&
-				       curr_key <= curr_new_nodes[insert_idx]->origin_key()) {
+				       curr_key >= curr_new_nodes[insert_idx]->origin_key()) {
 					insert_idx++;
 				}
-				if (insert_idx > 0)
+				if (insert_idx > 0 && curr_new_nodes[insert_idx - 1]->origin_key() <= curr_key)
 					insert_idx--;
 				/* TODO: assert that deletion is redundant? */
 				DataPayload *tmp_res = curr_new_nodes[insert_idx]->insert(curr_key, new_node);
@@ -163,59 +167,6 @@ public:
 		}
 		return curr->find(k, v);
 	}
-
-	// void
-	// dump_node(Node *curr, int depth = 0)
-	// {
-	// 	auto data = curr->get_data();
-	// 	auto extra = curr->get_extra();
-	// 	auto children = curr->get_children();
-	// 	std::cout << std::endl;
-	// 	std::cout << "Level: " << depth << std::endl;
-	// 	if (curr->is_leaf())
-	// 		std::cout << "-- Leaf --" << std::endl;
-	// 	std::cout << "Data:\n";
-	// 	for (auto &k : data) {
-	// 		std::cout << k << ", ";
-	// 	}
-	// 	std::cout << "\nExtra:\n";
-	// 	for (auto &k : extra) {
-	// 		std::cout << k << ", ";
-	// 	}
-	// 	std::cout << "\nChildren:\n";
-	// 	for (auto &c : children) {
-	// 		std::cout << c << ", ";
-	// 	}
-	// 	std::cout << std::endl << std::endl;
-	// 	for (auto &c : children)
-	// 		dump_node(c, depth + 1);
-	// }
-
-	// void
-	// dump()
-	// {
-	// 	dump_node(root_);
-	// }
-
-	// size_t
-	// count_node(Node *curr)
-	// {
-	// 	auto data = curr->get_data();
-	// 	auto extra = curr->get_extra();
-	// 	if (curr->is_leaf())
-	// 		return data.size() + extra.size();
-	// 	auto children = curr->get_children();
-	// 	size_t retval = 0;
-	// 	for (auto &c : children)
-	// 		retval += count_node(c);
-	// 	return retval;
-	// }
-
-	// size_t	
-	// count()
-	// {
-	// 	return count_node(root_);
-	// }
 
 private:
 	struct matras matras_;
