@@ -73,6 +73,7 @@
 #include "lua/xml.h"
 #include "lua/etcd_client.h"
 #include "lua/compress.h"
+#include "lua/trigger.h"
 #include "digest.h"
 #include "errinj.h"
 
@@ -134,6 +135,7 @@ extern char minifio_lua[],
 	error_lua[],
 	argparse_lua[],
 	iconv_lua[],
+	trigger_list_lua[],
 	/* jit.* library */
 	jit_vmdef_lua[],
 	jit_bc_lua[],
@@ -151,7 +153,6 @@ extern char minifio_lua[],
 	env_lua[],
 	pwd_lua[],
 	table_lua[],
-	trigger_lua[],
 	string_lua[],
 	swim_lua[],
 	jit_p_lua[], /* LuaJIT 2.1 profiler */
@@ -296,7 +297,7 @@ static const char *lua_modules[] = {
 	"help.en_US", help_en_US_lua,
 	"help", help_lua,
 	"internal.argparse", argparse_lua,
-	"internal.trigger", trigger_lua,
+	"internal.trigger_list", trigger_list_lua,
 	"pwd", pwd_lua,
 	"http.client", httpc_lua,
 	"iconv", iconv_lua,
@@ -879,6 +880,7 @@ tarantool_lua_init(const char *tarantool_bin, const char *script, int argc,
 	lua_call(L, 0, 0);
 	lua_register(L, "tonumber64", lbox_tonumber64);
 
+	tarantool_lua_trigger_init(L);
 	tarantool_lua_tweaks_init(L);
 	tarantool_lua_uri_init(L);
 	tarantool_lua_utf8_init(L);

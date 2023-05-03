@@ -5,7 +5,7 @@ local fiber    = require('fiber')
 local msgpack  = require('msgpack')
 local urilib   = require('uri')
 local internal = require('net.box.lib')
-local trigger  = require('internal.trigger')
+local trigger_list  = require('internal.trigger_list')
 
 local this_module
 
@@ -459,10 +459,10 @@ local function new_sm(uri, opts)
         remote._space_mt = space_metatable(remote)
         remote._index_mt = index_metatable(remote)
     end
-    remote._on_schema_reload = trigger.new("on_schema_reload")
-    remote._on_shutdown = trigger.new("on_shutdown")
-    remote._on_disconnect = trigger.new("on_disconnect")
-    remote._on_connect = trigger.new("on_connect")
+    remote._on_schema_reload = trigger_list.new("on_schema_reload")
+    remote._on_shutdown = trigger_list.new("on_shutdown")
+    remote._on_disconnect = trigger_list.new("on_disconnect")
+    remote._on_connect = trigger_list.new("on_connect")
     remote._is_connected = false
     -- Signaled when the state changes.
     remote._state_cond = fiber.cond()

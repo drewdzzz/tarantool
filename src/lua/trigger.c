@@ -1,5 +1,5 @@
 /*
- * Copyright 2010-2015, Tarantool AUTHORS, please see AUTHORS file.
+ * Copyright 2010-2023, Tarantool AUTHORS, please see AUTHORS file.
  *
  * Redistribution and use in source and binary forms, with or
  * without modification, are permitted provided that the following
@@ -32,9 +32,385 @@
 #include "lua/utils.h"
 #include <diag.h>
 #include <fiber.h>
+#include "core/event.h"
 
-struct lbox_trigger
+/**
+ * Lua trigger for event registry.
+ */
+struct lua_trigger {
+	/** Base trigger. */
+	struct trigger base;
+	/** A reference to Lua trigger object. */
+	int ref;
+	/** Name of a trigger. */
+	const char *name;
+};
+
+/**
+ * Virtual destructor for lua_trigger.
+ */
+static void
+lua_trigger_destroy(struct trigger *ptr)
 {
+	if (tarantool_L) {
+		struct lua_trigger *trigger = (struct lua_trigger *)ptr;
+		luaL_unref(tarantool_L, LUA_REGISTRYINDEX, trigger->ref);
+		TRASH(trigger);
+	}
+	TRASH(ptr);
+	free(ptr);
+}
+
+/**
+ * Virtual method run for lua_trigger.
+ * Event must be a pointer to int which is a reference to table with passed
+ * arguments in Lua registry.
+ * All the returned values are ignored.
+ */
+static int
+lua_trigger_run(struct trigger *ptr, void *event)
+{
+	struct lua_trigger *trigger = (struct lua_trigger *)ptr;
+	int rc = -1;
+	/*
+	 * Create a new coro and reference it. Remove it
+	 * from tarantool_L stack, which is a) scarce
+	 * b) can be used by other triggers while this
+	 * trigger yields, so when it's time to clean
+	 * up the coro, we wouldn't know which stack position
+	 * it is on.
+	 */
+	lua_State *L;
+	int coro_ref = LUA_NOREF;
+	if (fiber()->storage.lua.stack == NULL) {
+		L = luaT_newthread(tarantool_L);
+		if (L == NULL)
+			goto out;
+		coro_ref = luaL_ref(tarantool_L, LUA_REGISTRYINDEX);
+	} else {
+		L = fiber()->storage.lua.stack;
+		coro_ref = LUA_REFNIL;
+	}
+	int top = lua_gettop(L);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, trigger->ref);
+	/* Lua arguments are passed as a ref to Lua registry. */
+	int args_ref = *(int *)event;
+	lua_rawgeti(L, LUA_REGISTRYINDEX, args_ref);
+	int args_idx = top + 2;
+	int nargs = 0;
+	lua_pushnil(L);
+	while (lua_next(L, args_idx) != 0) {
+		nargs++;
+		lua_insert(L, -2);
+	}
+	lua_remove(L, args_idx);
+	if (luaT_call(L, nargs, LUA_MULTRET) != 0)
+		goto out;
+	/* Clear the stack - all the returned values are ignored. */
+	lua_settop(L, top);
+	rc = 0;
+out:
+	luaL_unref(tarantool_L, LUA_REGISTRYINDEX, coro_ref);
+	return rc;
+}
+
+/**
+ * Finds lua_trigger in trigger list by name. Returns NULL, if there is
+ * no trigger with such name.
+ */
+static struct lua_trigger *
+lua_trigger_find(struct rlist *list, const char *name)
+{
+	struct lua_trigger *trigger;
+	/** Find the old trigger, if any. */
+	rlist_foreach_entry(trigger, list, base.link) {
+		assert(trigger->base.run == lua_trigger_run);
+		if (strcmp(trigger->name, name) == 0)
+			return trigger;
+	}
+	return NULL;
+}
+
+/**
+ * Inserts Lua object as trigger in list with trigger_name.
+ * If passed object is not callable, an error is thrown.
+ * New trigger is returned.
+ */
+int
+lua_trigger_set(struct lua_State *L, int idx, const char *trigger_name,
+		struct rlist *list)
+{
+	if (!luaL_iscallable(L, idx))
+		luaL_error(L, "event trigger set: incorrect arguments");
+
+	struct lua_trigger *trg = lua_trigger_find(list, trigger_name);
+
+	if (trg != NULL) {
+		luaL_unref(L, LUA_REGISTRYINDEX, trg->ref);
+	} else {
+		trg = xmalloc(sizeof(*trg));
+		trigger_create(&trg->base, lua_trigger_run, NULL,
+			       lua_trigger_destroy);
+		trg->ref = LUA_NOREF;
+		trigger_add(list, &trg->base);
+		trg->name = xstrdup(trigger_name);
+	}
+	trg->ref = luaL_ref(L, LUA_REGISTRYINDEX);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, trg->ref);
+	return 1;
+}
+
+/**
+ * Deletes a trigger by name from the event. Deleted trigger is returned.
+ */
+int
+lua_trigger_del(lua_State *L, const char *trigger_name, struct rlist *list)
+{
+	struct lua_trigger *trg =
+		lua_trigger_find(list, trigger_name);
+	if (trg == NULL)
+		return 0;
+
+	trigger_clear(&trg->base);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, trg->ref);
+	luaL_unref(L, LUA_REGISTRYINDEX, trg->ref);
+	return 1;
+}
+
+/**
+ * Sets a trigger with passed name to the passed event.
+ * The first argument is event name, the second one is trigger name, the third
+ * one is trigger function.
+ */
+static int
+luaT_trigger_set(struct lua_State *L)
+{
+	const char *event_name = luaL_checkstring(L, 1);
+	struct event *event = event_registry_get(event_name, true);
+	assert(event != NULL);
+	const char *trigger_name = luaL_checkstring(L, 2);
+	return lua_trigger_set(L, 3, trigger_name, &event->triggers);
+}
+
+/**
+ * Deletes a trigger with passed name from passed event.
+ * The first argument is event name, the second one is trigger name.
+ */
+static int
+luaT_trigger_del(struct lua_State *L)
+{
+	const char *event_name = luaL_checkstring(L, 1);
+	struct event *event = event_registry_get(event_name, false);
+	if (event == NULL)
+		return 0;
+	const char *trigger_name = luaL_checkstring(L, 2);
+	int ret_count = lua_trigger_del(L, trigger_name, &event->triggers);
+	if (ret_count != 0)
+		event_registry_delete_if_unused(event);
+	return ret_count;
+}
+
+/**
+ * Calls all the triggers registered on passed event with variable number of
+ * arguments. Execution is stopped by a first exception.
+ * First argument must be a string - all the other arguments will be passed
+ * to the triggers without any processing or copying.
+ * Returns no values on success. If one of the triggers threw an error, it is
+ * raised again.
+ */
+static int
+luaT_trigger_call(struct lua_State *L)
+{
+	const char *event_name = luaL_checkstring(L, 1);
+	struct event *event = event_registry_get(event_name, false);
+	if (event == NULL)
+		return 0;
+	/* Create table with passed arguments and push it to registry. */
+	int nargs = lua_gettop(L) - 1;
+	lua_createtable(L, nargs, 0);
+	int args_idx = 2;
+	lua_insert(L, args_idx);
+	for (int i = nargs; i > 0; i--) {
+		lua_pushinteger(L, i);
+		lua_insert(L, -2);
+		lua_settable(L, args_idx);
+	}
+	int args_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+	assert(lua_gettop(L) == 1);
+	/* Run triggers with passed pointer to args ref. */
+	if (trigger_run(&event->triggers, &args_ref) != 0)
+		return luaT_error(L);
+	/* Remove arguments from registry. */
+	luaL_unref(L, LUA_REGISTRYINDEX, args_ref);
+	return 0;
+}
+
+/**
+ * Pushes an array of arrays [trigger_name, trigger_handler] onto Lua stack.
+ */
+static void
+luaT_trigger_info_push_event(struct lua_State *L, struct event *event)
+{
+	assert(event != NULL);
+	size_t idx = 0;
+	struct trigger *trigger;
+	lua_createtable(L, 0, 0);
+	rlist_foreach_entry(trigger, &event->triggers, link) {
+		assert(trigger->run == lua_trigger_run);
+		idx++;
+		struct lua_trigger *lua_trigger = (struct lua_trigger *)trigger;
+		lua_createtable(L, 2, 0);
+		lua_pushstring(L, lua_trigger->name);
+		lua_rawseti(L, -2, 1);
+		lua_rawgeti(L, LUA_REGISTRYINDEX, lua_trigger->ref);
+		lua_rawseti(L, -2, 2);
+		lua_rawseti(L, -2, idx);
+	}
+}
+
+/**
+ * Pushes an event onto Lua stack, passed as arg, and sets it as a value for
+ * event->name key of a table on the top of passed Lua stack.
+ */
+static bool
+luaT_trigger_info_foreach_cb(struct event *event, void *arg)
+{
+	lua_State *L = (lua_State *)arg;
+	luaT_trigger_info_push_event(L, event);
+	lua_setfield(L, -2, event->name);
+	return true;
+}
+
+/**
+ * Pushes a key-value table, where the key is the event name and value is an
+ * array of triggers, represented by two-element [trigger_name, trigger_handler]
+ * arrays, registered on this event, in the order in which they will be called.
+ * If an event name is passed, a table contains only one key which is passed
+ * argument, if there is an event with such a name, or returned table is empty,
+ * if the event does not exist.
+ */
+static int
+luaT_trigger_info(struct lua_State *L)
+{
+	if (lua_gettop(L) == 0) {
+		lua_createtable(L, 0, 0);
+		bool ok =
+			event_registry_foreach(luaT_trigger_info_foreach_cb, L);
+		assert(ok);
+		(void)ok;
+	} else {
+		const char *event_name = luaL_checkstring(L, 1);
+		struct event *event = event_registry_get(event_name, false);
+		if (event == NULL) {
+			lua_createtable(L, 0, 0);
+			return 1;
+		}
+		lua_createtable(L, 0, 1);
+		luaT_trigger_info_push_event(L, event);
+		lua_setfield(L, -2, event->name);
+	}
+	return 1;
+}
+
+const char *trigger_iterator_typename = "trigger.iterator";
+
+/**
+ * Iterator over Lua triggers.
+ */
+struct lua_trigger_iterator {
+	/** A stable list of triggers from the event. */
+	struct rlist list;
+};
+
+/**
+ * Gets lua_trigger_iterator from Lua stack with type check.
+ */
+static inline struct lua_trigger_iterator *
+lua_check_trigger_iterator(struct lua_State *L, int idx)
+{
+	return luaL_checkudata(L, idx, trigger_iterator_typename);
+}
+
+/**
+ * Takes an iterator step.
+ */
+static int
+luaT_trigger_iterator_next(struct lua_State *L)
+{
+	struct lua_trigger_iterator *it = lua_check_trigger_iterator(L, 1);
+	struct trigger *trigger = trigger_stable_list_take(&it->list);
+	if (trigger == NULL)
+		return 0;
+	assert(trigger->run == lua_trigger_run);
+	struct lua_trigger *lua_trigger = (struct lua_trigger *)trigger;
+	assert(lua_trigger->name != NULL);
+	lua_pushstring(L, lua_trigger->name);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, lua_trigger->ref);
+	return 2;
+}
+
+/**
+ * Destroys an iterator.
+ */
+static int
+luaT_trigger_iterator_gc(struct lua_State *L)
+{
+	struct lua_trigger_iterator *it = lua_check_trigger_iterator(L, 1);
+	trigger_stable_list_clear(&it->list);
+	TRASH(it);
+	return 0;
+}
+
+/**
+ * Creates iterator over triggers of event with passed name.
+ * The iterator yields a pair [trigger_name, trigger_handler].
+ * Return next method of iterator and iterator itself.
+ */
+static int
+luaT_trigger_pairs(struct lua_State *L)
+{
+	const char *event_name = luaL_checkstring(L, 1);
+	struct event *event = event_registry_get(event_name, false);
+	if (event == NULL)
+		return 0;
+	lua_pushcfunction(L, luaT_trigger_iterator_next);
+	struct lua_trigger_iterator *it = lua_newuserdata(L, sizeof(*it));
+	rlist_create(&it->list);
+	luaL_getmetatable(L, trigger_iterator_typename);
+	lua_setmetatable(L, -2);
+	if (trigger_stable_list_create(&it->list, &event->triggers) != 0)
+		return luaT_error(L);
+	return 2;
+}
+
+void
+tarantool_lua_trigger_init(struct lua_State *L)
+{
+	const struct luaL_Reg module_funcs[] = {
+		{"set", luaT_trigger_set},
+		{"del", luaT_trigger_del},
+		{"call", luaT_trigger_call},
+		{"info", luaT_trigger_info},
+		{"pairs", luaT_trigger_pairs},
+		{NULL, NULL}
+	};
+	luaT_newmodule(L, "trigger", module_funcs);
+	lua_pop(L, 1);
+	const struct luaL_Reg trigger_iterator_methods[] = {
+		{"__gc", luaT_trigger_iterator_gc},
+		{"next", luaT_trigger_iterator_next},
+		{ NULL, NULL }
+	};
+	luaL_register_type(L, trigger_iterator_typename,
+			   trigger_iterator_methods);
+}
+
+/**
+ * Support of old triggers - lbox_trigger contains push_event and pop_event
+ * methods - they provide the same behavior as a base trigger, but one has to
+ * know in advance what arguments will be passed to a trigger.
+ */
+struct lbox_trigger {
 	struct trigger base;
 	/** A reference to Lua trigger function. */
 	int ref;

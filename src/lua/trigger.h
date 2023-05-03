@@ -1,7 +1,7 @@
 #ifndef INCLUDES_TARANTOOL_LUA_TRIGGER_H
 #define INCLUDES_TARANTOOL_LUA_TRIGGER_H
 /*
- * Copyright 2010-2015, Tarantool AUTHORS, please see AUTHORS file.
+ * Copyright 2010-2023, Tarantool AUTHORS, please see AUTHORS file.
  *
  * Redistribution and use in source and binary forms, with or
  * without modification, are permitted provided that the following
@@ -89,6 +89,12 @@ typedef int
 int
 lbox_trigger_reset(struct lua_State *L, int top, struct rlist *list,
 		   lbox_push_event_f push_f, lbox_pop_event_f pop_f);
+
+/**
+ * Initializes module trigger.
+ */
+void
+tarantool_lua_trigger_init(struct lua_State *L);
 
 #if defined(__cplusplus)
 } /* extern "C" */
