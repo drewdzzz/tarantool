@@ -605,3 +605,8 @@ create_unit_test(PREFIX node_name
                  SOURCES node_name.c core_test_utils.c
                  LIBRARIES core unit node_name
 )
+
+create_unit_test(PREFIX event
+                 SOURCES event.c core_test_utils.c
+                 LIBRARIES core unit
+)

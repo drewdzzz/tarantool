@@ -45,6 +45,7 @@ set(core_sources
     mp_util.c
     cord_on_demand.cc
     tweaks.c
+    event.c
 )
 
 if (ENABLE_BACKTRACE)
