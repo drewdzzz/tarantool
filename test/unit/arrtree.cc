@@ -72,10 +72,12 @@ extent_free(void *ctx, void *extent)
 	free(extent);
 }
 
+using Cell = pgdm::internal::Cell<long long>;
+
 static void
 test_basic()
 {
-	pgdm::internal::ArrayTree<long long, BLOCK_SIZE> arr(matras);
+	pgdm::internal::ArrayTree<long long, Cell, BLOCK_SIZE> arr(matras);
 	for (int i = 0; i < 16; i += 2)
 		arr.append(i, NULL);
 	for (int i = 16; i < 1024 * 512; i += 2) {

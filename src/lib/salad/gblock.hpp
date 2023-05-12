@@ -1,7 +1,6 @@
 #pragma once
 
 #include <type_traits>
-#include <vector>
 #include <cstdlib>
 #include <cassert>
 #include <algorithm>
@@ -27,10 +26,10 @@ struct Point {
 
 template<class Key, unsigned BLOCK_SIZE>
 struct DataPayloadUnit {
-	ArrayTree<Key, BLOCK_SIZE> data;
+	ArrayTree<Key, internal::Cell<Key>, BLOCK_SIZE> data;
 	size_t size = 0;
-	std::vector<Point<Key>> upper_;
-	std::vector<Point<Key>> lower_;
+	ArrayTree<Key, Point<Key>, BLOCK_SIZE> upper_;
+	ArrayTree<Key, Point<Key>, BLOCK_SIZE> lower_;
 	size_t upper_start_;
 	size_t lower_start_;
 	Point<Key> rectangle_[4];
@@ -55,13 +54,13 @@ class GeometricBlock {
 
 	static_assert(2 * EPS * sizeof(pgdm::internal::Cell<Key>) == BLOCK_SIZE, "EPS is consistent with BLOCK_SIZE");
 
-	template<class T>
-	using Collection = std::vector<T>;
 	using Cell = pgdm::internal::Cell<Key>;
-	using ArrayTree = pgdm::internal::ArrayTree<Key, BLOCK_SIZE>;
+	using ArrayTree = pgdm::internal::ArrayTree<Key, Cell, BLOCK_SIZE>;
 	using DataPayloadUnit = pgdm::internal::DataPayloadUnit<Key, BLOCK_SIZE>;
 	using DataPayload = pgdm::internal::DataPayload<Key, BLOCK_SIZE>;
 	using Point = pgdm::internal::Point<Key>;
+	using Arc = pgdm::internal::ArrayTree<Key, Point, BLOCK_SIZE>;
+	using Self = GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>;
 
 	/** Array of DELTA cells. */
 	struct ExtraHolder {
@@ -86,7 +85,7 @@ class GeometricBlock {
 	};
 
 public:
-	GeometricBlock(struct matras &matras) : matras_(matras), data_(matras), extra_()
+	GeometricBlock(struct matras &matras) : matras_(matras), data_(matras), extra_(), lower_(matras), upper_(matras)
 	{
 		check_invariants();
 	}
@@ -290,8 +289,8 @@ private:
 			assert(lower_.size() == 0);
 			rectangle_[0] = p1;
 			rectangle_[1] = p2;
-			upper_.push_back(p1);
-			lower_.push_back(p2);
+			upper_.append(p1);
+			lower_.append(p2);
 			upper_start_ = 0;
 			lower_start_ = 0;
 			data_.append(k, v);
@@ -299,8 +298,8 @@ private:
 		} else if (data_.size() == 1) {
 			rectangle_[2] = p2;
 			rectangle_[3] = p1;
-			upper_.push_back(p1);
-			lower_.push_back(p2);
+			upper_.append(p1);
+			lower_.append(p2);
 			data_.append(k, v);
 			return true;
 		}
@@ -313,7 +312,6 @@ private:
 
 		/*
 		 * Invariant will be broken
-		 * TODO: understand why
 		 */
 		if (outside_line1 || outside_line2)
 			return false;
@@ -340,7 +338,7 @@ private:
 				continue;
 
 			upper_.resize(end);
-			upper_.push_back(p1);
+			upper_.append(p1);
 		}
 
 		if (vec_cmp(rectangle_[0], p2, rectangle_[0], rectangle_[2]) > 0) {
@@ -363,7 +361,7 @@ private:
 				continue;
 
 			lower_.resize(end);
-			lower_.push_back(p2);
+			lower_.append(p2);
 		}
 		return true;
 	}
@@ -440,36 +438,41 @@ private:
 			return payload;
 		}
 		std::sort(extra, extra + extra_len);
-		Collection<GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE> *> rebuilt {};
-		rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
+		Self *rebuilt = (Self *)xregion_alloc_array(
+			&fiber()->gc, Self, DELTA + 1, &alloc_size);
+		size_t rebuilt_i = 0;
+		new (&rebuilt[0]) Self(matras_);
 		size_t data_i = 0;
 		size_t extra_i = 0;
 		for (; data_i < data_.size() && extra_i < extra_len;) {
 			assert(data_[data_i] != extra[extra_i]);
+			assert(rebuilt_i <= DELTA);
 			bool success;
 			if (data_[data_i] < extra[extra_i]) {
 				if (data_[data_i].is_deleted()) {
 					data_i++;
 					continue;
 				}
-				success = rebuilt.back()->try_append(data_[data_i].k, data_[data_i].v);
+				success = rebuilt[rebuilt_i].try_append(data_[data_i].k, data_[data_i].v);
 				if (success) {
 					data_i++;
 				} else {
-					assert(!rebuilt.back()->data_.empty());
-					rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
+					assert(!rebuilt[rebuilt_i].data_.empty());
+					rebuilt_i++;
+					new (&rebuilt[rebuilt_i]) Self(matras_);
 				}
 			} else {
 				if (extra[extra_i].is_deleted()) {
 					extra_i++;
 					continue;
 				}
-				success = rebuilt.back()->try_append(extra[extra_i].k, extra[extra_i].v);
+				success = rebuilt[rebuilt_i].try_append(extra[extra_i].k, extra[extra_i].v);
 				if (success) {
 					extra_i++;
 				} else {
-					assert(!rebuilt.back()->data_.empty());
-					rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
+					assert(!rebuilt[rebuilt_i].data_.empty());
+					rebuilt_i++;
+					new (&rebuilt[rebuilt_i]) Self(matras_);
 				}
 			}
 		}
@@ -479,12 +482,13 @@ private:
 				continue;
 			}
 			bool success;	
-			success = rebuilt.back()->try_append(data_[data_i].k, data_[data_i].v);
+			success = rebuilt[rebuilt_i].try_append(data_[data_i].k, data_[data_i].v);
 			if (success) {
 				data_i++;
 			} else {
-				assert(!rebuilt.back()->data_.empty());
-				rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
+				assert(!rebuilt[rebuilt_i].data_.empty());
+				rebuilt_i++;
+				new (&rebuilt[rebuilt_i]) Self(matras_);
 			}
 		}
 		for (; extra_i < extra_len;) {
@@ -493,36 +497,34 @@ private:
 				continue;
 			}
 			bool success;	
-			success = rebuilt.back()->try_append(extra[extra_i].k, extra[extra_i].v);
+			success = rebuilt[rebuilt_i].try_append(extra[extra_i].k, extra[extra_i].v);
 			if (success) {
 				extra_i++;
 			} else {
-				assert(!rebuilt.back()->data_.empty());
-				rebuilt.emplace_back(new GeometricBlock<Key, EPS, DELTA, BLOCK_SIZE>(matras_));
+				assert(!rebuilt[rebuilt_i].data_.empty());
+				rebuilt_i++;
+				new (&rebuilt[rebuilt_i]) Self(matras_);
 			}
 		}
-		assert(rebuilt.size() <= DELTA + 1);
-		payload->size = rebuilt.size();
+		assert(rebuilt_i <= DELTA);
+		payload->size = rebuilt_i + 1;
 		payload->data = region_alloc_array(
 			&fiber()->gc, DataPayloadUnit,
-			rebuilt.size(), &alloc_size
+			payload->size, &alloc_size
 		);
 		memset(payload->data, 0, alloc_size);
-		for (size_t i = 0; i < rebuilt.size(); ++i) {
-			rebuilt[i]->check_invariants();
-			assert(rebuilt[i]->extra_.size() == 0);
-			assert(rebuilt[i]->data_.size() > 0);
+		for (size_t i = 0; i < payload->size; ++i) {
+			assert(rebuilt[i].extra_.size() == 0);
+			assert(rebuilt[i].data_.size() > 0);
 			DataPayloadUnit *unit = &payload->data[i];
-			unit->data = rebuilt[i]->data_;
-			unit->lower_ = std::move(rebuilt[i]->lower_);
-			unit->upper_ = std::move(rebuilt[i]->upper_);
-			unit->lower_start_ = rebuilt[i]->lower_start_;
-			unit->upper_start_ = rebuilt[i]->upper_start_;
+			unit->data = rebuilt[i].data_;
+			unit->lower_ = rebuilt[i].lower_;
+			unit->upper_ = rebuilt[i].upper_;
+			unit->lower_start_ = rebuilt[i].lower_start_;
+			unit->upper_start_ = rebuilt[i].upper_start_;
 			for (size_t j = 0; j < 4; ++j)
-				unit->rectangle_[j] = rebuilt[i]->rectangle_[j];
+				unit->rectangle_[j] = rebuilt[i].rectangle_[j];
 		}
-		payload->size = rebuilt.size();
-		rebuilt.clear();
 		return payload;
 	}
 
@@ -724,51 +726,51 @@ public:
 		std::cout << std::endl;	
 	}
 
-	Collection<Key>
-	get_data()
-	{
-		check_invariants();
-		std::vector<Key> vec;
-		for (size_t  i = 0; i < data_.size(); ++i) {
-			int factor = 1;
-			if (data_[i].is_deleted())
-				factor = -1;
-			vec.push_back(data_[i].k * factor);
-		}
-		return vec;
-	}
+	// Collection<Key>
+	// get_data()
+	// {
+	// 	check_invariants();
+	// 	std::vector<Key> vec;
+	// 	for (size_t  i = 0; i < data_.size(); ++i) {
+	// 		int factor = 1;
+	// 		if (data_[i].is_deleted())
+	// 			factor = -1;
+	// 		vec.push_back(data_[i].k * factor);
+	// 	}
+	// 	return vec;
+	// }
 
-	Collection<Key>
-	get_extra()
-	{
-		check_invariants();
-		std::vector<Key> vec;
-		for (size_t  i = 0; i < extra_.size(); ++i) {
-			int factor = 1;
-			if (extra_[i].is_deleted())
-				factor = -1;
-			vec.push_back(extra_[i].k * factor);
-		}
-		return vec;
-	}
+	// Collection<Key>
+	// get_extra()
+	// {
+	// 	check_invariants();
+	// 	std::vector<Key> vec;
+	// 	for (size_t  i = 0; i < extra_.size(); ++i) {
+	// 		int factor = 1;
+	// 		if (extra_[i].is_deleted())
+	// 			factor = -1;
+	// 		vec.push_back(extra_[i].k * factor);
+	// 	}
+	// 	return vec;
+	// }
 
-	Collection<void *>
-	get_values()
-	{
-		check_invariants();
-		std::vector<void *> vec;
-		for (size_t  i = 0; i < data_.size(); ++i) {
-			if (data_[i].is_deleted())
-				continue;
-			vec.push_back(data_[i].v);
-		}
-		for (size_t  i = 0; i < extra_.size(); ++i) {
-			if (extra_[i].is_deleted())
-				continue;
-			vec.push_back(extra_[i].v);
-		}
-		return vec;
-	}
+	// Collection<void *>
+	// get_values()
+	// {
+	// 	check_invariants();
+	// 	std::vector<void *> vec;
+	// 	for (size_t  i = 0; i < data_.size(); ++i) {
+	// 		if (data_[i].is_deleted())
+	// 			continue;
+	// 		vec.push_back(data_[i].v);
+	// 	}
+	// 	for (size_t  i = 0; i < extra_.size(); ++i) {
+	// 		if (extra_[i].is_deleted())
+	// 			continue;
+	// 		vec.push_back(extra_[i].v);
+	// 	}
+	// 	return vec;
+	// }
 
 	void
 	check_invariants()
@@ -804,8 +806,8 @@ private:
 	ExtraHolder extra_;
 	/* Number of tombstones in data + extra elements. */
 	size_t bias_ = 0;
-	Collection<Point> lower_;
-	Collection<Point> upper_;
+	Arc lower_;
+	Arc upper_;
 	size_t lower_start_;
 	size_t upper_start_;
 	Point rectangle_[4];

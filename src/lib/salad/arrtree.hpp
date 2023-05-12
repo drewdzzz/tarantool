@@ -32,17 +32,15 @@ namespace internal {
 		}
 	};
 
-	template<class Key, unsigned BLOCK_SIZE>
+	template<class Key, class Cell, unsigned BLOCK_SIZE>
 	class ArrayTree {
 	private:
-		using Cell = Cell<Key>;
 		static const uint64_t lvl3_size = BLOCK_SIZE / sizeof(Cell);
 		static const uint64_t lvl2_size = BLOCK_SIZE / sizeof(matras_id_t);
 		static const uint64_t lvl1_size = BLOCK_SIZE / sizeof(matras_id_t);
 		static const uint64_t lvl23_size = lvl3_size * lvl2_size;
 		static const uint64_t overall_size = lvl1_size * lvl2_size * lvl3_size;
 
-		static_assert(sizeof(Key) == 8, "Expected key size");
 		static_assert(sizeof(Cell) == 16, "Expected key size");
 	private:
 
@@ -86,18 +84,16 @@ namespace internal {
 		}
 
 	public:
-		ArrayTree() = default;
+		ArrayTree() = delete;
 		ArrayTree(struct matras &matras) : matras_(&matras) {
 			void *ptr = matras_alloc(matras_, &arr_);
 			assert(ptr != NULL);
 			memset(ptr, 0, BLOCK_SIZE);
 		}
+
 		bool
-		append(const Key &k, void *v)
+		append(Cell c)
 		{
-			assert(v != (void *)-1);
-			if (size_ == overall_size)
-				return false;
 			matras_id_t *ptr = (matras_id_t *)matras_touch(matras_, arr_);
 			size_t idx = size_++;
 			size_t idx1 = idx / lvl23_size;
@@ -122,9 +118,15 @@ namespace internal {
 				cell_ptr = (Cell *)matras_touch(matras_, ptr[idx2]);
 			}
 			size_t idx3 = idx % lvl3_size;
-			cell_ptr[idx3].k = k;
-			cell_ptr[idx3].v = v;
+			cell_ptr[idx3] = c;
 			return true;
+		}
+
+		bool
+		append(const Key &k, void *v)
+		{
+			assert(v != (void *)-1);
+			return append(Cell{k, v});
 		}
 
 		Cell &
@@ -178,6 +180,16 @@ namespace internal {
 			if (it != NULL && it->k != k)
 				it = NULL;
 			return it;
+		}
+
+		/**
+		 * Just strips prefix.
+		 */
+		void
+		resize(size_t new_size)
+		{
+			assert(size_ >= new_size);
+			size_ = new_size;
 		}
 		/** With no respect to deleted elems. */
 		size_t size(void) { return size_; }

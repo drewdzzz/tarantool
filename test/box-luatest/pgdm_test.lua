@@ -16,7 +16,7 @@ g.test_random_1e5 = function(cg)
     cg.server:exec(function()
         local seed = os.time()
         math.randomseed(seed)
-        local iter_num = 1e5
+        local iter_num = 5 * 1e5
         local max_num = 10 * iter_num
 
         local data = {}
@@ -38,6 +38,12 @@ g.test_random_1e5 = function(cg)
         for i = 1, iter_num do
 	        s:replace{data[i]}
         end
+	local found_num = 0
+	for i = 1, max_num do
+		local found = sk:get{i} and true
+		if found then found_num = found_num + 1 end
+	end
+	print(found_num)
         for i = 1, max_num do
             local found = sk:get{i} and true
             if found ~= used[i] then   
