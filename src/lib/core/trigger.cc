@@ -73,9 +73,9 @@ struct run_link {
 /** A memory pool for trigger run link allocation. */
 static __thread struct mempool run_link_pool;
 
-/** Add the trigger to the run list. */
+/** Add the trigger to the stable list. */
 static int
-run_list_put_trigger(struct rlist *list, struct trigger *trigger)
+trigger_stable_list_put(struct rlist *stable_list, struct trigger *trigger)
 {
 	struct run_link *run_link =
 		(struct run_link *)mempool_alloc(&run_link_pool);
@@ -85,16 +85,17 @@ run_list_put_trigger(struct rlist *list, struct trigger *trigger)
 		return -1;
 	}
 	run_link->trigger = trigger;
-	rlist_add_tail_entry(list, run_link, in_run);
+	rlist_add_tail_entry(stable_list, run_link, in_run);
 	rlist_add_tail_entry(&trigger->run_links, run_link, in_trigger);
 	return 0;
 }
 
-/** Take the next trigger from the run list and free the corresponding link. */
-static struct trigger *
-run_list_take_trigger(struct rlist *list)
+struct trigger *
+trigger_stable_list_take(struct rlist *stable_list)
 {
-	struct run_link *link = rlist_shift_entry(list, struct run_link,
+	if (rlist_empty(stable_list))
+		return NULL;
+	struct run_link *link = rlist_shift_entry(stable_list, struct run_link,
 						  in_run);
 	struct trigger *trigger = link->trigger;
 	rlist_del_entry(link, in_trigger);
@@ -102,22 +103,38 @@ run_list_take_trigger(struct rlist *list)
 	return trigger;
 }
 
-/** Empty the run list and free all the links allocated for it. */
-static void
-run_list_clear(struct rlist *list)
+int
+trigger_stable_list_create(struct rlist *stable_list, struct rlist *list)
 {
-	while (!rlist_empty(list))
-		run_list_take_trigger(list);
+	rlist_create(stable_list);
+	struct trigger *trigger;
+	rlist_foreach_entry(trigger, list, link) {
+		if (trigger_stable_list_put(stable_list, trigger) != 0) {
+			trigger_stable_list_clear(stable_list);
+			return -1;
+		}
+	}
+	return 0;
 }
 
-/** Execute the triggers in an order specified by \a list. */
-static int
-trigger_run_list(struct rlist *list, void *event)
+void
+trigger_stable_list_clear(struct rlist *stable_list)
 {
-	while (!rlist_empty(list)) {
-		struct trigger *trigger = run_list_take_trigger(list);
+	struct trigger *trigger;
+	do {
+		trigger = trigger_stable_list_take(stable_list);
+	} while (trigger != NULL);
+}
+
+/** Execute the triggers in an order specified by \a stable_list. */
+static int
+trigger_stable_list_run(struct rlist *stable_list, void *event)
+{
+	while (!rlist_empty(stable_list)) {
+		struct trigger *trigger =
+			trigger_stable_list_take(stable_list);
 		if (trigger->run(trigger, event) != 0) {
-			run_list_clear(list);
+			trigger_stable_list_clear(stable_list);
 			return -1;
 		}
 	}
@@ -142,14 +159,9 @@ trigger_run(struct rlist *list, void *event)
 	 *    rlist_foreach_entry nor rlist_foreach_entry_safe can help
 	 */
 	RLIST_HEAD(run_list);
-	struct trigger *trigger;
-	rlist_foreach_entry(trigger, list, link) {
-		if (run_list_put_trigger(&run_list, trigger) != 0) {
-			run_list_clear(&run_list);
-			return -1;
-		}
-	}
-	return trigger_run_list(&run_list, event);
+	if (trigger_stable_list_create(&run_list, list) != 0)
+		return -1;
+	return trigger_stable_list_run(&run_list, event);
 }
 
 int
@@ -158,12 +170,12 @@ trigger_run_reverse(struct rlist *list, void *event)
 	RLIST_HEAD(run_list);
 	struct trigger *trigger;
 	rlist_foreach_entry_reverse(trigger, list, link) {
-		if (run_list_put_trigger(&run_list, trigger) != 0) {
-			run_list_clear(&run_list);
+		if (trigger_stable_list_put(&run_list, trigger) != 0) {
+			trigger_stable_list_clear(&run_list);
 			return -1;
 		}
 	}
-	return trigger_run_list(&run_list, event);
+	return trigger_stable_list_run(&run_list, event);
 }
 
 void
@@ -201,8 +213,8 @@ trigger_fiber_run(struct rlist *list, void *event, double timeout)
 
 	RLIST_HEAD(run_list);
 	rlist_foreach_entry(trigger, list, link) {
-		if (run_list_put_trigger(&run_list, trigger) != 0) {
-			run_list_clear(&run_list);
+		if (trigger_stable_list_put(&run_list, trigger) != 0) {
+			trigger_stable_list_clear(&run_list);
 			return -1;
 		}
 	}
@@ -221,7 +233,7 @@ trigger_fiber_run(struct rlist *list, void *event, double timeout)
 
 	unsigned current_fiber = 0;
 	while (!rlist_empty(&run_list)) {
-		trigger = run_list_take_trigger(&run_list);
+		trigger = trigger_stable_list_take(&run_list);
 		char name[FIBER_NAME_INLINE];
 		snprintf(name, FIBER_NAME_INLINE,
 			 "trigger_fiber%d", current_fiber);
@@ -232,7 +244,7 @@ trigger_fiber_run(struct rlist *list, void *event, double timeout)
 			current_fiber++;
 		} else {
 			ev_timer_stop(loop(), &timer);
-			run_list_clear(&run_list);
+			trigger_stable_list_clear(&run_list);
 			return -1;
 		}
 	}

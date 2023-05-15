@@ -144,6 +144,30 @@ int
 trigger_run_reverse(struct rlist *list, void *event);
 
 /**
+ * Creates a stable list of triggers from another trigger list. Such a list is
+ * changed only in one case - when the trigger contained there is deleted, it is
+ * also removed from this list. It is needed in order to work with trigger lists
+ * in a safe way - all the triggers in such list were definitely not deleted.
+ * One trigger can belong to several stable lists at once. stable_list is
+ * not necessarily initialized.
+ */
+int
+trigger_stable_list_create(struct rlist *stable_list, struct rlist *list);
+
+/**
+ * Pops a trigger from the head of the stable list and returns it. If the list
+ * is empty, NULL is returned.
+ */
+struct trigger *
+trigger_stable_list_take(struct rlist *stable_list);
+
+/**
+ * Pops all the triggers from the stable list.
+ */
+void
+trigger_stable_list_clear(struct rlist *stable_list);
+
+/**
  * Runs registered triggers in fibers.
  * Note, since triggers are added to the list head, this
  * function first runs triggers that were added last. Waits

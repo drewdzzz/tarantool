@@ -187,14 +187,96 @@ test_trigger_clear_during_run(void)
 	return check_plan();
 }
 
+static void
+fill_trigger_list_simple(struct rlist *list)
+{
+	rlist_create(list);
+	for (int i = TEST_LENGTH - 1; i >= 0; i--) {
+		trigger_create(&triggers[i].base, trigger_nop_f, NULL, NULL);
+		triggers[i].id = i;
+		trigger_add(list, &triggers[i].base);
+	}
+}
+
+static int
+test_trigger_stable_list_simple(void)
+{
+	header();
+	plan(TEST_LENGTH + 1);
+
+	struct rlist trigger_list;
+	struct rlist stable_list;
+	struct trigger *curr_trigger;
+	fill_trigger_list_simple(&trigger_list);
+	trigger_stable_list_create(&stable_list, &trigger_list);
+	for (int i = 0; i < TEST_LENGTH; i++) {
+		curr_trigger = trigger_stable_list_take(&stable_list);
+		fail_if(curr_trigger == NULL);
+		struct test_trigger *trig = (struct test_trigger *)curr_trigger;
+		is(trig->id, i,
+		   "Triggers must be traversed in the order they are in list");
+	}
+	curr_trigger = trigger_stable_list_take(&stable_list);
+	is(curr_trigger, NULL, "Iterator must be exhausted");
+	trigger_stable_list_clear(&stable_list);
+
+	footer();
+	return check_plan();
+}
+
+static int
+test_trigger_stable_list_clear_member_at(int idx)
+{
+	header();
+	plan(2 * (TEST_LENGTH - 1) + 1);
+
+	struct rlist trigger_list;
+	struct rlist stable_list;
+	struct trigger *curr_trigger;
+	fill_trigger_list_simple(&trigger_list);
+	trigger_stable_list_create(&stable_list, &trigger_list);
+	trigger_clear(&triggers[idx].base);
+	int last_id = -1;
+	for (int i = 0; i < TEST_LENGTH - 1; i++) {
+		curr_trigger = trigger_stable_list_take(&stable_list);
+		isnt(curr_trigger, NULL,
+		     "There must be %d triggers in the list", TEST_LENGTH - 1);
+		struct test_trigger *trig = (struct test_trigger *)curr_trigger;
+		ok(trig->id > last_id,
+		   "Triggers must be traversed in the order they are in list");
+		last_id = trig->id;
+	}
+	curr_trigger = trigger_stable_list_take(&stable_list);
+	is(curr_trigger, NULL, "Iterator must be exhausted");
+	trigger_stable_list_clear(&stable_list);
+
+	footer();
+	return check_plan();
+}
+
+static int
+test_trigger_stable_list_clear_member(void)
+{
+	header();
+	plan(TEST_LENGTH);
+
+	for (int i = 0; i < TEST_LENGTH; i++)
+		test_trigger_stable_list_clear_member_at(i);
+
+	footer();
+	return check_plan();
+}
+
 int
 main(void)
 {
 	memory_init();
 	fiber_init(fiber_c_invoke);
 
-	plan(1);
+	plan(3);
 	test_trigger_clear_during_run();
+	test_trigger_stable_list_simple();
+	test_trigger_stable_list_clear_member();
 
 	fiber_free();
 	memory_free();
