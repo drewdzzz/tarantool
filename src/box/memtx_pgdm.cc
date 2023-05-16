@@ -130,8 +130,6 @@ memtx_pgdm_index_count(struct index *base, enum iterator_type type,
 	(void)type;
 	(void)key;
 	(void)part_count;
-	// struct memtx_pgdm_index *index = (struct memtx_pgdm_index *)base;
-	// index->pgdm->dump();
 	return 0;
 }
 

@@ -7,29 +7,6 @@
 // #define UNIT_TAP_COMPATIBLE 1
 // #include "unit.h"
 
-// #define TEST_CHECK(expr) {                                                                                    \
-//         if (!static_cast<bool>(expr)) {                                                                       \
-//                 std::cerr << "Test faied in " << __FILE__ << " on " << __LINE__ << ", expr: " << #expr << "\n"; \
-// 		abort();                                                                                      \
-// 	}                                                                                                     \
-// }
-
-// #define TEST_CHECK_EQ(a, b) {                                               \
-//         if (!(a == b)) {                                                    \
-//                 std::cerr << "Equality test faied in " << __FILE__ << " on "  \
-// 		<< __LINE__ << ", a: {" << a << "} != b: {" << b << "}\n";  \
-// 		abort();                                                    \
-// 	}                                                                   \
-// }
-
-// #define TEST_CHECK_NEQ(a, b) {                                                    \
-//         if (a == b) {                                                          \
-//                 std::cerr << "Non-equality test faied in " << __FILE__ << " on "  \
-// 		<< __LINE__ << ", a: {" << a << "} == b: {" << b << "}\n";        \
-// 		abort();                                                          \
-// 	}                                                                         \
-// }
-
 // static void
 // test_linear()
 // {

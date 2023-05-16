@@ -76,36 +76,36 @@ extent_free(void *ctx, void *extent)
 static void
 test_linear_infinity(void)
 {
-	GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE> block(matras);
+	GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE> block(matras, NULL);
 	for (int i = 0; i < 2048; ++i) {
 		void *v = static_cast<void *>(new int(i));
 		auto res = block.insert(i, v);
-		TEST_CHECK_EQ(res, NULL);
+		TEST_CHECK(res == NULL);
 	}
 }
 
 static void
 test_linear_infinity_with_offset(void)
 {
-	GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE> block(matras);
+	GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE> block(matras, NULL);
 	for (int i = 0; i < 2048; ++i) {
 		void *v = static_cast<void *>(new int(i));
 		auto res = block.insert(i + 8144, v);
-		TEST_CHECK_EQ(res, NULL);
+		TEST_CHECK(res == NULL);
 	}
 }
 
 static void
 test_guaranteed_capacity_impl(void)
 {
-	auto *block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras);
+	auto *block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras, NULL);
 	for (int i = 0; i < 16 * 2; ++i) {
 		int k = rand() % 65536;
 		void *v = static_cast<void *>(new int(i));
 		auto res = block->insert(k, v);
 		TEST_CHECK(res == NULL || res->size == 1);
 		if (res != NULL) {
-			block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras, res->data[0]);
+			block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras, NULL, res->data[0]);
 		}
 	}
 }
@@ -121,14 +121,14 @@ test_guaranteed_capacity()
 static void
 test_replaces_impl()
 {
-	auto *block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras);
+	auto *block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras, NULL);
 	for (int i = 0; i < 16 * 2; ++i) {
 		int k = rand() % 256;
 		void *v = static_cast<void *>(new int(i));
 		auto res = block->insert(k, v);
 		TEST_CHECK(res == NULL || res->size == 1);
 		if (res != NULL) {
-			block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras, res->data[0]);
+			block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras, NULL, res->data[0]);
 		}
 	}
 }
@@ -144,23 +144,23 @@ test_replaces()
 static void
 test_linear_replaces()
 {
-	GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE> block(matras);	
+	GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE> block(matras, NULL);	
 	for (int i = 0; i < EPSILON * 100; ++i) {
 		void *v = static_cast<void *>(new int(i));
 		auto res = block.insert(i * 40, v);
-		TEST_CHECK_EQ(res, NULL);
+		TEST_CHECK(res == NULL);
 	}
 	for (int i = 0; i < 16; ++i) {
 		void *v = static_cast<void *>(new int(i));
 		auto res = block.insert(i * 40, v);
-		TEST_CHECK_EQ(res, NULL);
+		TEST_CHECK(res == NULL);
 	}
 }
 
 static void
 test_find_linear()
 {
-	GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE> block(matras);
+	GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE> block(matras, NULL);
 	for (int i = 0; i < 256; i += 2) {
 		void *v = static_cast<void *>(new int(i));
 		auto res = block.insert(i, v);
@@ -184,7 +184,7 @@ test_find_linear()
 static void
 test_find_impl()
 {
-	auto *block = new GeometricBlock<Key, EPSILON, 2, BLOCK_SIZE>(matras);
+	auto *block = new GeometricBlock<Key, EPSILON, 2, BLOCK_SIZE>(matras, NULL);
 	std::map<int, int> used;
 	std::set<int> unused;
 	for (int i = 0; i < 4; ++i) {
@@ -200,7 +200,7 @@ test_find_impl()
 		auto res = block->insert(k, v);
 		TEST_CHECK(res == NULL || res->size == 1);
 		if (res != NULL) {
-			block = new GeometricBlock<Key, EPSILON, 2, BLOCK_SIZE>(matras, res->data[0]);
+			block = new GeometricBlock<Key, EPSILON, 2, BLOCK_SIZE>(matras, NULL, res->data[0]);
 		}
 	}
 
@@ -228,7 +228,7 @@ test_find()
 static void
 test_sparse()
 {
-	auto *block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras);
+	auto *block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras, NULL);
 	std::map<int, int> used;
 	for (int i = 0; i < 32; ++i) {
 		int k = rand() % 2048;
@@ -237,7 +237,7 @@ test_sparse()
 		auto res = block->insert(k, v);
 		TEST_CHECK(res == NULL || res->size == 1);
 		if (res != NULL) {
-			block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras, res->data[0]);
+			block = new GeometricBlock<Key, EPSILON, 1, BLOCK_SIZE>(matras, NULL, res->data[0]);
 		}
 	}
 }

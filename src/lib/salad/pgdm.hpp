@@ -29,7 +29,7 @@ class pgdm_map {
 		for (size_t i = 0; i < payload->size; ++i) {
 			matras_id_t result_id;
 			nodes[i] = (Node *)matras_alloc(&matras_, &result_id);
-			new (nodes[i]) Node(matras_, payload->data[i]);
+			new (nodes[i]) Node(matras_, &gc_, payload->data[i]);
 		}
 		*size = payload->size;
 		return nodes;
@@ -46,18 +46,18 @@ public:
 			      extent_alloc_func, extent_free_func, alloc_ctx,
 			      alloc_stats);
 		matras_head_read_view(&view_);
-		root_ = new Node(matras_);
+		gc_ = NULL;
+		root_ = new Node(matras_, &gc_);
 		root_->set_leaf();
 	}
 
 	/**
 	 * If key lower than all other keys - put it in the first one.
-	 * TODO: do not forget to truncate region.
 	 */
 	void
 	insert(const Key &k, void *v)
 	{
-		RegionGuard(&fiber()->gc);
+		auto guard = RegionGuard(&fiber()->gc);
 		assert(root_ != NULL);
 		Node *curr = root_;
 		std::stack<Node *> s;
@@ -151,7 +151,7 @@ public:
 				root_ = new_nodes[0];
 				return;
 			}
-			root_ = new Node(matras_);
+			root_ = new Node(matras_, &gc_);
 			for (size_t i = 0; i < new_nodes_size; ++i) {
 				DataPayload *tmp_res =
 					root_->insert(new_nodes[i]->origin_key(), new_nodes[i]);
@@ -179,6 +179,7 @@ public:
 private:
 	struct matras matras_;
 	struct matras_view view_;
+	void *gc_;
 	Node *root_;
 };
 

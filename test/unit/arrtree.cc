@@ -74,10 +74,12 @@ extent_free(void *ctx, void *extent)
 
 using Cell = pgdm::internal::Cell<long long>;
 
+using ArrayTree = pgdm::internal::ArrayTree<long long, Cell, BLOCK_SIZE>;
+
 static void
 test_basic()
 {
-	pgdm::internal::ArrayTree<long long, Cell, BLOCK_SIZE> arr(matras);
+	ArrayTree arr(matras, NULL);
 	for (int i = 0; i < 16; i += 2)
 		arr.append(i, NULL);
 	for (int i = 16; i < 1024 * 512; i += 2) {
@@ -86,18 +88,53 @@ test_basic()
 		size_t a = i / 2 - 8;
 		size_t b = i / 2;
 		pgdm::internal::Cell<long long> *it = arr.find(k, a, b);
-		TEST_CHECK_NEQ(it, NULL);
+		TEST_CHECK(it != NULL);
 		TEST_CHECK_EQ(it->k, i - 2);
 		k = i - 1;
 		it = arr.find(k, a, b);
-		TEST_CHECK_EQ(it, NULL);
+		TEST_CHECK(it == NULL);
 	}
+}
+
+static void
+test_gc()
+{
+	void *gc = NULL;
+	ArrayTree *arr1 = new ArrayTree(matras, &gc);
+	ArrayTree *arr2 = new ArrayTree(matras, &gc);
+	ArrayTree *arr3 = new ArrayTree(matras, &gc);
+	for (int i = 0; i < 32 * 128 * 32; i++) {
+		arr1->append(i, NULL);
+		arr2->append(i, NULL);
+		arr3->append(i, NULL);
+	}
+	arr1->drop();
+	arr2->drop();
+	arr3->drop();
+	auto ext_num1 = matras_extent_count(&matras);
+	ArrayTree *arr4 = new ArrayTree(matras, &gc);
+	ArrayTree *arr5 = new ArrayTree(matras, &gc);
+	ArrayTree *arr6 = new ArrayTree(matras, &gc);
+	for (int i = 0; i < 32 * 128 * 32; i++) {
+		arr4->append(i, NULL);
+		arr5->append(i, NULL);
+		arr6->append(i, NULL);
+	}
+	auto ext_num2 = matras_extent_count(&matras);
+	TEST_CHECK_EQ(ext_num1, ext_num2);
+	delete(arr1);
+	delete(arr2);
+	delete(arr3);
+	delete(arr4);
+	delete(arr5);
+	delete(arr6);
 }
 
 static void
 test_main()
 {
 	test_basic();
+	test_gc();
 }
 
 int

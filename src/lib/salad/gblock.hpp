@@ -27,7 +27,6 @@ struct Point {
 template<class Key, unsigned BLOCK_SIZE>
 struct DataPayloadUnit {
 	ArrayTree<Key, internal::Cell<Key>, BLOCK_SIZE> data;
-	size_t size = 0;
 	ArrayTree<Key, Point<Key>, BLOCK_SIZE> upper_;
 	ArrayTree<Key, Point<Key>, BLOCK_SIZE> lower_;
 	size_t upper_start_;
@@ -85,12 +84,14 @@ class GeometricBlock {
 	};
 
 public:
-	GeometricBlock(struct matras &matras) : matras_(matras), data_(matras), extra_(), lower_(matras), upper_(matras)
+	GeometricBlock(struct matras &matras, void **gc) :
+		matras_(matras), gc_(gc), data_(matras, gc_), extra_(),
+		lower_(matras, gc_), upper_(matras, gc_)
 	{
 		check_invariants();
 	}
-	GeometricBlock(struct matras &matras, DataPayloadUnit& data) :
-		matras_(matras), data_(data.data), extra_(),
+	GeometricBlock(struct matras &matras, void **gc, DataPayloadUnit& data) :
+		matras_(matras), gc_(gc), data_(data.data), extra_(),
 		lower_(std::move(data.lower_)),
 		upper_(std::move(data.upper_)),
 		lower_start_(data.lower_start_),
@@ -441,7 +442,7 @@ private:
 		Self *rebuilt = (Self *)xregion_alloc_array(
 			&fiber()->gc, Self, DELTA + 1, &alloc_size);
 		size_t rebuilt_i = 0;
-		new (&rebuilt[0]) Self(matras_);
+		new (&rebuilt[0]) Self(matras_, gc_);
 		size_t data_i = 0;
 		size_t extra_i = 0;
 		for (; data_i < data_.size() && extra_i < extra_len;) {
@@ -459,7 +460,7 @@ private:
 				} else {
 					assert(!rebuilt[rebuilt_i].data_.empty());
 					rebuilt_i++;
-					new (&rebuilt[rebuilt_i]) Self(matras_);
+					new (&rebuilt[rebuilt_i]) Self(matras_, gc_);
 				}
 			} else {
 				if (extra[extra_i].is_deleted()) {
@@ -472,7 +473,7 @@ private:
 				} else {
 					assert(!rebuilt[rebuilt_i].data_.empty());
 					rebuilt_i++;
-					new (&rebuilt[rebuilt_i]) Self(matras_);
+					new (&rebuilt[rebuilt_i]) Self(matras_, gc_);
 				}
 			}
 		}
@@ -488,7 +489,7 @@ private:
 			} else {
 				assert(!rebuilt[rebuilt_i].data_.empty());
 				rebuilt_i++;
-				new (&rebuilt[rebuilt_i]) Self(matras_);
+				new (&rebuilt[rebuilt_i]) Self(matras_, gc_);
 			}
 		}
 		for (; extra_i < extra_len;) {
@@ -503,7 +504,7 @@ private:
 			} else {
 				assert(!rebuilt[rebuilt_i].data_.empty());
 				rebuilt_i++;
-				new (&rebuilt[rebuilt_i]) Self(matras_);
+				new (&rebuilt[rebuilt_i]) Self(matras_, gc_);
 			}
 		}
 		assert(rebuilt_i <= DELTA);
@@ -512,7 +513,6 @@ private:
 			&fiber()->gc, DataPayloadUnit,
 			payload->size, &alloc_size
 		);
-		memset(payload->data, 0, alloc_size);
 		for (size_t i = 0; i < payload->size; ++i) {
 			assert(rebuilt[i].extra_.size() == 0);
 			assert(rebuilt[i].data_.size() > 0);
@@ -525,6 +525,9 @@ private:
 			for (size_t j = 0; j < 4; ++j)
 				unit->rectangle_[j] = rebuilt[i].rectangle_[j];
 		}
+		upper_.drop();
+		lower_.drop();
+		data_.drop();
 		return payload;
 	}
 
@@ -802,6 +805,7 @@ public:
 
 private:
 	struct matras &matras_;
+	void **gc_;
 	ArrayTree data_;
 	ExtraHolder extra_;
 	/* Number of tombstones in data + extra elements. */
