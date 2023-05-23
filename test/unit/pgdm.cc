@@ -200,9 +200,9 @@ static void
 test_main()
 {
 	test_linear();
-	// test_find();
-	// test_big_root_simple();
-	// test_big_root();
+	test_find();
+	test_big_root_simple();
+	test_big_root();
 	test_linear_big();
 }
 
