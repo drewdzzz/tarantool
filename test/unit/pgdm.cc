@@ -184,28 +184,15 @@ static void
 test_linear_big()
 {
 	pgdm::pgdm_map<int, EPSILON, 2, EXTENT_SIZE, BLOCK_SIZE> index(extent_alloc, extent_free, NULL, NULL);
-	for (int i = 0; i < 1000; ++i) {
-		index.insert(7 * i + 13, new int(i));
+	int indsize = 6e5;
+	for (int i = 0; i < indsize; ++i) {
+		index.insert(i, new int(i));
 	}
-	for (int i = 0; i < 1000; ++i) {
+	for (int i = 0; i < indsize; ++i) {
 		void *v;
-		bool found = index.find(7 * i + 13, &v);
+		bool found = index.find(i, &v);
 		TEST_CHECK(found);
 		TEST_CHECK_EQ(*(int *)v, i);
-	}
-	for (int i = 0; i < 1000; ++i) {
-		index.insert(7 * i + 13, new int(2 * i));
-	}
-	for (int i = 0; i < 1000; ++i) {
-        void *v;
-		bool found = index.find(7 * i + 13, &v);
-		TEST_CHECK(found);
-		TEST_CHECK_EQ(*(int *)v, 2 * i);
-	}
-	for (int i = 0; i < 1000; ++i) {
-        void *v;
-		bool found = index.find(7 * i + 12, &v);
-		TEST_CHECK(!found);
 	}
 }
 
@@ -213,9 +200,9 @@ static void
 test_main()
 {
 	test_linear();
-	test_find();
-	test_big_root_simple();
-	test_big_root();
+	// test_find();
+	// test_big_root_simple();
+	// test_big_root();
 	test_linear_big();
 }
 

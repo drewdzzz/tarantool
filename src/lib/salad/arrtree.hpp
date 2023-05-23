@@ -45,6 +45,8 @@ namespace internal {
 		static const uint64_t overall_size = lvl1_size * lvl2_size * lvl3_size;
 
 		static_assert(sizeof(Cell) == 16, "Expected key size");
+	public:
+		static const uint64_t max_size = overall_size;
 	private:
 
 		Cell *
@@ -176,6 +178,7 @@ namespace internal {
 		bool
 		append(Cell c)
 		{
+			assert(size_ < overall_size);
 			matras_id_t *ptr = (matras_id_t *)matras_touch(matras_, arr_);
 			size_t idx = size_++;
 			size_t idx1 = lvl1_idx(idx);

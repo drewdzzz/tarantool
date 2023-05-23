@@ -278,6 +278,8 @@ private:
 	bool
 	try_append(const Key& k, void *v)
 	{
+		if (data_.size() == ArrayTree::max_size)
+			return false;
 		check_invariants();
 		if (!data_.empty() && k <= data_[data_.size() - 1].k)
 			return false;
