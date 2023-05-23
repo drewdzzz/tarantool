@@ -1,24 +1,18 @@
+local iter_num = arg[1]
+
 require('os').execute('rm *.xlog *.snap')
 clock = require('clock')
 box.cfg{}
 s = box.schema.space.create('select_tester')
-s:create_index('pk')
+pk = s:create_index('pk')
 sk = s:create_index('sk', {type = 'pgdm'})
-local iter_num = 1e4
-
-data = {}
 for i = 1, iter_num do
-	local pos = math.random(1, #data + 1)
-	table.insert(data, pos, i)
-end
-
-for i = 1, iter_num do
-	s:replace{data[i]}
+	s:replace{i}
 end
 
 function bench_tree()
 	for i = 1, iter_num do
-		s:get{i}
+		pk:get{i}
 	end
 end
 
@@ -29,13 +23,13 @@ function bench_pgdm()
 end
 
 -- Warmup
-for i = 1, 3 do
-	bench_tree()
-	bench_pgdm()
-end
+bench_tree()
+bench_pgdm()
 
-tree = {}
-pgdm = {}
+for i = 1, 3 do
+	tree = {}
+	pgdm = {}
+end
 
 exp_num = 5
 
@@ -63,5 +57,17 @@ pgdm_rps = iter_num / pgdm_avg_time
 print('Tree RPS: ', tree_rps)
 print('Pgdm RPS: ', pgdm_rps)
 print('Gained ', (pgdm_rps - tree_rps) / tree_rps * 100, '%')
+
+absent = {}
+
+for i = 1, iter_num do
+	if sk:get(i) == nil then
+		table.insert(absent, i)
+	end
+end
+
+print(#absent)
+print(absent[1])
+print(absent[#absent])
 
 s:drop()

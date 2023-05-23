@@ -124,10 +124,6 @@ public:
 			for (; i < new_nodes_size; ++i) {
 				Node *new_node = new_nodes[i];
 				auto &curr_key = new_node->start_key();
-				/*
-				 * curr new parts: [[0], [5], [10]]
-				 * new parts: 15
-				 */
 				while (insert_idx < curr_new_nodes_size &&
 				       curr_key >= curr_new_nodes[insert_idx]->origin_key()) {
 					insert_idx++;
