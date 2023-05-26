@@ -680,14 +680,14 @@ txn_commit_stmt(struct txn *txn, struct request *request)
 	 */
 	if (stmt->space != NULL && stmt->space->run_triggers &&
 	    (stmt->old_tuple || stmt->new_tuple)) {
-		if (!rlist_empty(&stmt->space->before_replace)) {
+		if (space_has_before_replace_triggers(stmt->space)) {
 			/*
 			 * Triggers see old_tuple and that tuple
 			 * must remain the same
 			 */
 			stmt->does_require_old_tuple = true;
 		}
-		if (!rlist_empty(&stmt->space->on_replace)) {
+		if (space_has_on_replace_triggers(stmt->space)) {
 			/*
 			 * Triggers see old_tuple and that tuple
 			 * must remain the same
@@ -695,7 +695,7 @@ txn_commit_stmt(struct txn *txn, struct request *request)
 			stmt->does_require_old_tuple = true;
 
 			txn->space_on_replace_triggers_depth++;
-			int rc = trigger_run(&stmt->space->on_replace, txn);
+			int rc = space_on_replace(stmt->space, txn);
 			txn->space_on_replace_triggers_depth--;
 			if (rc != 0)
 				goto fail;

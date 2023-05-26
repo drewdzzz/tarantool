@@ -90,6 +90,17 @@ lbox_push_txn_stmt(struct lua_State *L, void *event)
 	return 4;
 }
 
+static int
+lbox_prepare_trigger_arg(void *state, void *event)
+{
+	struct lua_trigger_arg *arg = (struct lua_trigger_arg *)state;
+	lua_State *L = arg->L;
+	int nargs = lbox_push_txn_stmt(L, event);
+	if (nargs < 0)
+		return -1;
+	return 0;
+}
+
 /**
  * Function invoked upon successful execution of a before_replace trigger.
  * It resets the current transaction statement to the tuple returned by
@@ -138,6 +149,13 @@ lbox_pop_txn_stmt(struct lua_State *L, int nret, void *event)
 		tuple_unref(stmt->new_tuple);
 	stmt->new_tuple = result;
 	return 0;
+}
+
+static int
+lbox_extract_trigger_arg(void *state, void *event)
+{
+	struct lua_trigger_arg *arg = (struct lua_trigger_arg *)state;
+	return lbox_pop_txn_stmt(arg->L, arg->nret, event);
 }
 
 /**
@@ -685,6 +703,26 @@ box_lua_space_new(struct lua_State *L, struct space *space)
 	lua_setfield(L, -2, space_name(space));
 
 	lua_pop(L, 2); /* box, space */
+
+	/**
+	 * Set the space's event wrappers.
+	 */
+	struct event *on_replace_events[] = {
+		space->event_on_replace.by_id,
+		space->event_on_replace.by_name,
+	};
+	struct event *before_replace_events[] = {
+		space->event_before_replace.by_id,
+		space->event_before_replace.by_name,
+	};
+	for (size_t i = 0; i < lengthof(on_replace_events); ++i) {
+		on_replace_events[i]->push = lbox_prepare_trigger_arg;
+		assert(on_replace_events[i]->pop == NULL);
+	}
+	for (size_t i = 0; i < lengthof(before_replace_events); ++i) {
+		before_replace_events[i]->push = lbox_prepare_trigger_arg;
+		before_replace_events[i]->pop = lbox_extract_trigger_arg;
+	}
 }
 
 /** Delete a given space in Lua */

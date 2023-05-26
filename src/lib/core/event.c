@@ -5,8 +5,6 @@
  */
 #include "event.h"
 
-#include <assert.h>
-
 #include "assoc.h"
 #include "diag.h"
 #include "trivia/util.h"
@@ -25,6 +23,9 @@ event_create(const char *name)
 	struct event *event = xmalloc(sizeof(*event));
 	rlist_create(&event->triggers);
 	event->name = xstrdup(name);
+	event->ref_count = 0;
+	event->push = NULL;
+	event->pop = NULL;
 	return event;
 }
 
@@ -93,7 +94,7 @@ event_registry_delete_if_unused(struct event *event)
 {
 	assert(event_registry != NULL);
 	assert(event != NULL);
-	if (!rlist_empty(&event->triggers))
+	if (!rlist_empty(&event->triggers) || event->ref_count > 0)
 		return;
 	struct mh_strnptr_t *h = event_registry;
 	const char *name = event->name;

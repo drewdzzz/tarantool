@@ -95,12 +95,8 @@ lbox_trigger_reset(struct lua_State *L, int top, struct rlist *list,
 struct lua_trigger_arg {
 	/** Lua stack with arguments on the top. */
 	struct lua_State *L;
-	/** Reference to lua thread if it was created. */
-	int coro_ref;
-	/** Number of passed arguments. */
-	int nargs;
-	/** Savepoint for region. */
-	uint32_t region_svp;
+	/** Number of returned arguments. */
+	int nret;
 };
 
 /**

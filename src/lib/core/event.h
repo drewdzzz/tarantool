@@ -7,10 +7,17 @@
 
 #include "trigger.h"
 #include <stdbool.h>
+#include <assert.h>
 
 #if defined(__cplusplus)
 extern "C" {
 #endif /* defined(__cplusplus) */
+
+typedef int
+(*trigger_prepare_state_f)(void *state, void *event);
+
+typedef int
+(*trigger_extract_state_f)(void *state, void *event);
 
 /**
  * List of triggers registered on event identified by name.
@@ -20,7 +27,23 @@ struct event {
 	struct rlist triggers;
 	/** Name of event. */
 	char *name;
+	unsigned ref_count;
+	trigger_prepare_state_f push;
+	trigger_extract_state_f pop;
 };
+
+static inline void
+event_ref(struct event *event)
+{
+	event->ref_count++;
+}
+
+static inline void
+event_unref(struct event *event)
+{
+	assert(event->ref_count > 0);
+	event->ref_count--;
+}
 
 typedef bool
 event_registry_foreach_f(struct event *event, void *arg);

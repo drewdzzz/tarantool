@@ -237,6 +237,95 @@ space_cleanup_constraints(struct space *space)
 	return 0;
 }
 
+static char *
+space_event_name_by_id(const char *event_fmt, uint32_t id)
+{
+	const size_t id_len = 15;
+	char *event_name = xmalloc(strlen(event_fmt) + id_len);
+	sprintf(event_name, event_fmt, id);
+	return event_name;
+}
+
+static char *
+space_event_name_by_name(const char *event_fmt, const char *name)
+{
+	char *event_name = xmalloc(strlen(event_fmt) + strlen(name));
+	sprintf(event_name, event_fmt, name);
+	return event_name;
+}
+
+static void
+space_set_event(struct event **event, const char *event_name)
+{
+	*event = event_registry_get(event_name, true);
+	assert(*event != NULL);
+	event_ref(*event);
+}
+
+/**
+ * Set all the events associated with space.
+ */
+static void
+space_set_events(struct space *space, bool on_recovery)
+{
+	assert(space->def != NULL);
+	struct space_event *space_events[] = {
+		&space->event_on_replace,
+		&space->event_before_replace,
+	};
+	const char *event_name_by_id_fmt[] = {
+		"box.space[%u].on_replace",
+		"box.space[%u].before_replace",
+	};
+	const char *event_name_by_name_fmt[] = {
+		"box.space.%s.on_replace",
+		"box.space.%s.before_replace",
+	};
+	assert(lengthof(space_events) == lengthof(event_name_by_id_fmt));
+	assert(lengthof(space_events) == lengthof(event_name_by_name_fmt));
+	if (on_recovery) {
+		event_name_by_id_fmt[0] = "box.space[%u].on_recovery_replace";
+		event_name_by_id_fmt[1] = "box.space[%u].before_recovery_replace";
+		event_name_by_name_fmt[0] = "box.space.%s.on_recovery_replace";
+		event_name_by_name_fmt[1] = "box.space.%s.before_recovery_replace";
+	}
+	const size_t len = lengthof(space_events);
+	for (size_t i = 0; i < len; ++i) {
+		char *event_name = space_event_name_by_id(event_name_by_id_fmt[i], space->def->id);
+		space_set_event(&space_events[i]->by_id, event_name);
+		free(event_name);
+	}
+	for (size_t i = 0; i < len; ++i) {
+		char *event_name = space_event_name_by_name(event_name_by_name_fmt[i], space->def->name);
+		space_set_event(&space_events[i]->by_name, event_name);
+		free(event_name);
+	}
+}
+
+static void
+space_unset_event(struct event **event)
+{
+	assert(*event != NULL);
+	event_unref(*event);
+	event_registry_delete_if_unused(*event);
+	*event = NULL;
+}
+
+static void
+space_unset_events(struct space *space)
+{
+	struct space_event *space_events[] = {
+		&space->event_on_replace,
+		&space->event_before_replace,
+	};
+	const size_t len = lengthof(space_events);
+	for (size_t i = 0; i < len; ++i) {
+		space_unset_event(&space_events[i]->by_id);
+		space_unset_event(&space_events[i]->by_name);
+	}
+}
+
+
 int
 space_create(struct space *space, struct engine *engine,
 	     const struct space_vtab *vtab, struct space_def *def,
@@ -272,6 +361,7 @@ space_create(struct space *space, struct engine *engine,
 		tuple_format_ref(format);
 
 	space->def = space_def_dup(def);
+	space_set_events(space, !box_is_configured());
 
 	/* Create indexes and fill the index map. */
 	space->index_map = (struct index **)
@@ -405,6 +495,7 @@ space_delete(struct space *space)
 	}
 	trigger_destroy(&space->before_replace);
 	trigger_destroy(&space->on_replace);
+	space_unset_events(space);
 	if (space->upgrade != NULL)
 		space_upgrade_unref(space->upgrade);
 	space_def_delete(space->def);
@@ -532,6 +623,31 @@ index_name_by_id(struct space *space, uint32_t id)
 	if (index != NULL)
 		return index->def->name;
 	return NULL;
+}
+
+int
+space_on_replace(struct space *space, struct txn *txn)
+{
+	/*
+	 * Since the triggers can yield, a space can be dropped
+	 * while executing one of the trigger lists.
+	 * Since trigger_run is resistant to triggers deletion, the first
+	 * call is safe, but we need to save other triggers to prevent
+	 * use-after-free.
+	 */
+	struct event *events[] = {
+		space->event_on_replace.by_id,
+		space->event_on_replace.by_name,
+	};
+	for (size_t i = 0; i < lengthof(events); ++i)
+		event_ref(events[i]);
+	int rc = trigger_run(&space->on_replace, txn);
+	for (size_t i = 0; i < lengthof(events) && rc == 0; ++i) {
+		rc = trigger_run(&events[i]->triggers, txn);
+	}
+	for (size_t i = 0; i < lengthof(events); ++i)
+		event_unref(events[i]);
+	return rc;
 }
 
 /**
@@ -713,7 +829,21 @@ after_old_tuple_lookup:;
 	stmt->old_tuple = old_tuple;
 	stmt->new_tuple = new_tuple;
 
+	struct event *events[] = {
+		space->event_before_replace.by_id,
+		space->event_before_replace.by_name,
+	};
+	for (size_t i = 0; i < lengthof(events); ++i)
+		event_ref(events[i]);
+
 	int rc = trigger_run(&space->before_replace, txn);
+	for (size_t i = 0; i < lengthof(events) && rc == 0; ++i) {
+		rc = trigger_run(&events[i]->triggers, txn);
+	}
+
+	for (size_t i = 0; i < lengthof(events); ++i)
+		event_unref(events[i]);
+
 
 	/*
 	 * BEFORE riggers cannot change the old tuple,
@@ -790,7 +920,7 @@ space_execute_dml(struct space *space, struct txn *txn,
 			}
 		}
 	}
-	if (unlikely((!rlist_empty(&space->before_replace) &&
+	if (unlikely((space_has_before_replace_triggers(space) &&
 		      space->run_triggers) || need_foreign_key_check)) {
 		/*
 		 * Call BEFORE triggers if any before dispatching

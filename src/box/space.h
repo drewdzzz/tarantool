@@ -39,6 +39,7 @@
 #include "error.h"
 #include "diag.h"
 #include "iproto_constants.h"
+#include "core/event.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -157,6 +158,11 @@ struct space_vtab {
 	void (*invalidate)(struct space *space);
 };
 
+struct space_event {
+	struct event *by_id;
+	struct event *by_name;
+};
+
 struct space {
 	/** Virtual function table. */
 	const struct space_vtab *vtab;
@@ -168,6 +174,9 @@ struct space {
 	struct rlist before_replace;
 	/** Triggers fired after space_replace() -- see txn_commit_stmt(). */
 	struct rlist on_replace;
+
+	struct space_event event_on_replace;
+	struct space_event event_before_replace;
 	/** SQL Trigger list. */
 	struct sql_trigger *sql_triggers;
 	/**
@@ -467,6 +476,34 @@ index_name_by_id(struct space *space, uint32_t id);
  */
 int
 access_check_space(struct space *space, user_access_t access);
+
+/**
+ * Check if the space has registered on_replace triggers.
+ */
+static inline bool
+space_has_on_replace_triggers(struct space *space)
+{
+	return !rlist_empty(&space->on_replace) ||
+	       !rlist_empty(&space->event_on_replace.by_id->triggers) ||
+	       !rlist_empty(&space->event_on_replace.by_name->triggers);
+}
+
+/**
+ * Check if the space has registered before_replace triggers.
+ */
+static inline bool
+space_has_before_replace_triggers(struct space *space)
+{
+	return !rlist_empty(&space->before_replace) ||
+	       !rlist_empty(&space->event_before_replace.by_id->triggers) ||
+	       !rlist_empty(&space->event_before_replace.by_name->triggers);
+}
+
+/**
+ * Run on_replace triggers registered for a space.
+ */
+int
+space_on_replace(struct space *space, struct txn *txn);
 
 /**
  * Execute a DML request on the given space.

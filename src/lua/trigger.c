@@ -44,6 +44,8 @@ struct lua_trigger {
 	int ref;
 	/** Name of a trigger. */
 	const char *name;
+	trigger_prepare_state_f *push;
+	trigger_extract_state_f *pop;
 };
 
 /**
@@ -61,19 +63,86 @@ lua_trigger_destroy(struct trigger *ptr)
 	free(ptr);
 }
 
-/**
- * Virtual method run for lua_trigger.
- * Event must be a pointer to int which is a reference to table with passed
- * arguments in Lua registry.
- * All the returned values are ignored.
- */
 static int
 lua_trigger_run(struct trigger *ptr, void *event)
 {
 	struct lua_trigger *trigger = (struct lua_trigger *)ptr;
-	struct lua_trigger_arg *arg = (struct lua_trigger_arg *)event;
-	lua_State *L = arg->L;
-	int nargs = arg->nargs;
+	int rc = -1;
+	/*
+	 * Create a new coro and reference it. Remove it
+	 * from tarantool_L stack, which is a) scarce
+	 * b) can be used by other triggers while this
+	 * trigger yields, so when it's time to clean
+	 * up the coro, we wouldn't know which stack position
+	 * it is on.
+	 */
+	lua_State *L;
+	int coro_ref = LUA_NOREF;
+	if (fiber()->storage.lua.stack == NULL) {
+		L = luaT_newthread(tarantool_L);
+		if (L == NULL)
+			goto out;
+		coro_ref = luaL_ref(tarantool_L, LUA_REGISTRYINDEX);
+	} else {
+		L = fiber()->storage.lua.stack;
+		coro_ref = LUA_REFNIL;
+	}
+	int top_svp = lua_gettop(L);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, trigger->ref);
+	int top = lua_gettop(L);
+	struct lua_trigger_arg arg;
+	arg.L = L;
+	arg.nret = 0;
+	if (trigger->push != NULL && *(trigger->push) != NULL) {
+		rc = (*(trigger->push))(&arg, event);
+		if (rc != 0)
+			goto out;
+	}
+	int nargs = lua_gettop(L) - top;
+	/*
+	 * There are two cases why we can't access `trigger` after
+	 * calling it's function:
+	 * - trigger can be unregistered and destroyed
+	 *   directly in its function.
+	 * - trigger function may yield and someone destroy trigger
+	 *   at this moment.
+	 * So we keep 'trigger->pop_event' in local variable for
+	 * further use.
+	 */
+	trigger_extract_state_f pop = NULL;
+	if (trigger->pop != NULL && *(trigger->pop) != NULL)
+		pop = *(trigger->pop);
+	trigger = NULL;
+	if (luaT_call(L, nargs, LUA_MULTRET))
+		goto out;
+	int nret = lua_gettop(L) - top_svp;
+	arg.nret = nret;
+	if (pop != NULL &&
+	    pop(&arg, event) != 0) {
+		lua_settop(L, top);
+		goto out;
+	}
+	/*
+	 * Clear the stack after pop_event saves all
+	 * the needed return values.
+	 */
+	lua_settop(L, top_svp);
+	rc = 0;
+out:
+	luaL_unref(tarantool_L, LUA_REGISTRYINDEX, coro_ref);
+	return rc;
+}
+
+/**
+ * Virtual method run for lua_trigger.
+ * Event must be a pointer to int which is a reference to table with passed
+ * arguments in Lua registry.
+ * All the returned values are on the top of the stack.
+ */
+static int
+lua_trigger_run_raw(struct trigger *ptr, struct lua_State *L, int nargs)
+{
+	struct lua_trigger *trigger = (struct lua_trigger *)ptr;
 	int top_svp = lua_gettop(L);
 	lua_rawgeti(L, LUA_REGISTRYINDEX, trigger->ref);
 	int top = lua_gettop(L);
@@ -82,7 +151,6 @@ lua_trigger_run(struct trigger *ptr, void *event)
 		lua_pushvalue(L, top - i);
 	if (luaT_call(L, nargs, LUA_MULTRET) != 0)
 		return -1;
-	/* Clear the stack - all the returned values are ignored. */
 	lua_settop(L, top_svp);
 	return 0;
 }
@@ -111,7 +179,8 @@ lua_trigger_find(struct rlist *list, const char *name)
  */
 int
 lua_trigger_set(struct lua_State *L, int idx, const char *trigger_name,
-		struct rlist *list)
+		struct rlist *list, trigger_prepare_state_f *prepare,
+		trigger_extract_state_f *extract)
 {
 	if (!luaL_iscallable(L, idx))
 		luaL_error(L, "event trigger set: incorrect arguments");
@@ -127,6 +196,8 @@ lua_trigger_set(struct lua_State *L, int idx, const char *trigger_name,
 		trg->ref = LUA_NOREF;
 		trigger_add(list, &trg->base);
 		trg->name = xstrdup(trigger_name);
+		trg->push = prepare;
+		trg->pop = extract;
 	}
 	trg->ref = luaL_ref(L, LUA_REGISTRYINDEX);
 	lua_rawgeti(L, LUA_REGISTRYINDEX, trg->ref);
@@ -162,7 +233,8 @@ luaT_trigger_set(struct lua_State *L)
 	struct event *event = event_registry_get(event_name, true);
 	assert(event != NULL);
 	const char *trigger_name = luaL_checkstring(L, 2);
-	return lua_trigger_set(L, 3, trigger_name, &event->triggers);
+	return lua_trigger_set(L, 3, trigger_name, &event->triggers,
+			       &event->push, &event->pop);
 }
 
 /**
@@ -198,11 +270,13 @@ luaT_trigger_call(struct lua_State *L)
 	struct event *event = event_registry_get(event_name, false);
 	if (event == NULL)
 		return 0;
-	struct lua_trigger_arg arg = {
-		.L = L, .coro_ref = LUA_REFNIL,
-		.nargs = lua_gettop(L) - 1,
-	};
-	if (trigger_run(&event->triggers, &arg) != 0)
+	struct rlist trigger_list;
+	int rc = trigger_stable_list_create(&trigger_list, &event->triggers);
+	while (!rlist_empty(&trigger_list) && rc == 0) {
+		struct trigger *trg = trigger_stable_list_take(&trigger_list);
+		rc = lua_trigger_run_raw(trg, L, lua_gettop(L) - 1);
+	}
+	if (rc != 0)
 		return luaT_error(L);
 	return 0;
 }
