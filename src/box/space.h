@@ -164,8 +164,10 @@ struct space {
 	struct access access[BOX_USER_MAX];
 	/** Engine used by this space. */
 	struct engine *engine;
-	/** Triggers fired before executing a request. */
+	/** Triggers fired before executing a request. Does not work on recovery. */
 	struct rlist before_replace;
+	/** Triggers fired before executing a request on recovery. */
+	struct rlist before_recovery_replace;
 	/** Triggers fired after space_replace() -- see txn_commit_stmt(). */
 	struct rlist on_replace;
 	/** SQL Trigger list. */
@@ -301,6 +303,9 @@ space_on_initial_recovery_complete(struct space *space, void *nothing);
  */
 int
 space_on_final_recovery_complete(struct space *space, void *nothing);
+
+bool
+space_has_before_replace(struct space *space);
 
 /** Get space ordinal number. */
 static inline uint32_t

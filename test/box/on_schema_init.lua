@@ -1,7 +1,7 @@
 #!/usr/bin/env tarantool
 local os = require('os')
 
-local function test_before_replace_trig(old, new) -- luacheck: no unused args
+local function test_before_recovery_replace_trig(old, new) -- luacheck: no unused args
     -- return multiple values so that the stack fills earlier.
     return new:update{{'+', 2, 1}}, new:update{{'+', 2, 1}}, new:update{{'+', 2, 1}}, new:update{{'+', 2, 1}}
 end
@@ -9,7 +9,8 @@ end
 local function space_on_replace_trig(old, new) -- luacheck: no unused args
     if new and new[3] == 'test_on_schema_init' then
         box.on_commit(function()
-            box.space.test_on_schema_init:before_replace(test_before_replace_trig)
+            box.space.test_on_schema_init:before_recovery_replace(test_before_recovery_replace_trig)
+            box.space.test_on_schema_init:before_replace(test_before_recovery_replace_trig)
         end)
     end
 end

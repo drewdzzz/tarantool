@@ -183,6 +183,27 @@ lbox_space_before_replace(struct lua_State *L)
 }
 
 /**
+ * Set/Reset/Get space.before_recovery_replace trigger
+ */
+static int
+lbox_space_before_recovery_replace(struct lua_State *L)
+{
+	int top = lua_gettop(L);
+
+	if (top < 1 || !lua_istable(L, 1)) {
+		luaL_error(L,
+	   "usage: space:before_recovery_replace(function | nil, [function | nil])");
+	}
+	lua_getfield(L, 1, "id"); /* Get space id. */
+	uint32_t id = lua_tonumber(L, lua_gettop(L));
+	struct space *space = space_cache_find_xc(id);
+	lua_pop(L, 1);
+
+	return lbox_trigger_reset(L, 3, &space->before_recovery_replace,
+				  lbox_push_txn_stmt, lbox_pop_txn_stmt);
+}
+
+/**
  * Create constraint field in lua space object, given by index i in lua stack.
  * If the space has no constraints, there will be no constraint field.
  */
@@ -453,6 +474,11 @@ lbox_fillspace(struct lua_State *L, struct space *space, int i)
 	/* space:before_replace */
 	lua_pushstring(L, "before_replace");
 	lua_pushcfunction(L, lbox_space_before_replace);
+	lua_settable(L, i);
+
+	/* space:before_recovery_replace */
+	lua_pushstring(L, "before_recovery_replace");
+	lua_pushcfunction(L, lbox_space_before_recovery_replace);
 	lua_settable(L, i);
 
 	if (space_is_vinyl(space)) {

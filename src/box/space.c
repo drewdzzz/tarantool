@@ -264,6 +264,7 @@ space_create(struct space *space, struct engine *engine,
 	space->index_count = index_count;
 	space->index_id_max = index_id_max;
 	rlist_create(&space->before_replace);
+	rlist_create(&space->before_recovery_replace);
 	rlist_create(&space->on_replace);
 	space->run_triggers = true;
 
@@ -404,6 +405,7 @@ space_delete(struct space *space)
 		tuple_format_unref(space->format);
 	}
 	trigger_destroy(&space->before_replace);
+	trigger_destroy(&space->before_recovery_replace);
 	trigger_destroy(&space->on_replace);
 	if (space->upgrade != NULL)
 		space_upgrade_unref(space->upgrade);
@@ -534,6 +536,15 @@ index_name_by_id(struct space *space, uint32_t id)
 	return NULL;
 }
 
+bool
+space_has_before_replace(struct space *space)
+{
+	if (box_is_configured())
+		return !rlist_empty(&space->before_replace);
+	else
+		return !rlist_empty(&space->before_recovery_replace);
+}
+
 /**
  * Run BEFORE triggers and foreign key constraint checks registered for a space.
  * If a trigger changes the current statement, this function updates the
@@ -543,6 +554,12 @@ static int
 space_before_replace(struct space *space, struct txn *txn,
 		     struct request *request)
 {
+	say_info("Space before replace in space %s", space->def->name);
+	struct rlist *triggers = &space->before_replace;
+	if (!box_is_configured()) {
+		say_info("Space before recovery replace");
+		triggers = &space->before_recovery_replace;
+	}
 	enum iproto_type type = request->type;
 	struct index *pk = space_index(space, 0);
 
@@ -568,9 +585,7 @@ space_before_replace(struct space *space, struct txn *txn,
 	case IPROTO_REPLACE:
 	case IPROTO_UPSERT:
 		/*
-		 * Since upgrade from pre-1.7.5 versions passes tuple with
-		 * not suitable format to before_replace triggers during recovery,
-		 * we need to disable format validation until box is configured.
+		 * Validate tuples only for before_replace triggers.
 		 */
 		if (box_is_configured() && tuple_validate_raw(space->format,
 							      request->tuple) != 0)
@@ -713,7 +728,7 @@ after_old_tuple_lookup:;
 	stmt->old_tuple = old_tuple;
 	stmt->new_tuple = new_tuple;
 
-	int rc = trigger_run(&space->before_replace, txn);
+	int rc = trigger_run(triggers, txn);
 
 	/*
 	 * BEFORE riggers cannot change the old tuple,
@@ -790,7 +805,7 @@ space_execute_dml(struct space *space, struct txn *txn,
 			}
 		}
 	}
-	if (unlikely((!rlist_empty(&space->before_replace) &&
+	if (unlikely((space_has_before_replace(space) &&
 		      space->run_triggers) || need_foreign_key_check)) {
 		/*
 		 * Call BEFORE triggers if any before dispatching

@@ -13,8 +13,8 @@ local function trig_engine(old, new) -- luacheck: no unused args
 end
 
 box.ctl.on_schema_init(function()
-    box.space._space:before_replace(trig_local)
-    box.space._space:before_replace(trig_engine)
+    box.space._space:before_recovery_replace(trig_local)
+    box.space._space:before_recovery_replace(trig_engine)
 end)
 
 box.cfg({

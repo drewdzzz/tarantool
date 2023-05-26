@@ -1539,6 +1539,7 @@ local function on_init_set_recovery_triggers()
         if trig_tbl.version > trig_oldest_version then
             for space, trig in pairs(trig_tbl.tbl) do
                 box.space[space]:before_replace(trig)
+                box.space[space]:before_recovery_replace(trig)
                 log.info("Set recovery trigger on space '%s' to comply with "..
                          "version %s format", space, trig_tbl.version)
             end
@@ -1557,6 +1558,7 @@ local function clear_recovery_triggers(version)
            (not version or trig_tbl.version <= version) then
             for space, trig in pairs(trig_tbl.tbl) do
                 box.space[space]:before_replace(nil, trig)
+                box.space[space]:before_recovery_replace(nil, trig)
                 log.info("Remove recovery trigger on space '%s' for version %s",
                          space, trig_tbl.version)
             end

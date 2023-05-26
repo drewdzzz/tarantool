@@ -680,7 +680,7 @@ txn_commit_stmt(struct txn *txn, struct request *request)
 	 */
 	if (stmt->space != NULL && stmt->space->run_triggers &&
 	    (stmt->old_tuple || stmt->new_tuple)) {
-		if (!rlist_empty(&stmt->space->before_replace)) {
+		if (space_has_before_replace(stmt->space)) {
 			/*
 			 * Triggers see old_tuple and that tuple
 			 * must remain the same
