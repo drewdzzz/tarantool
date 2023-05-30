@@ -71,47 +71,20 @@ static int
 lua_trigger_run(struct trigger *ptr, void *event)
 {
 	struct lua_trigger *trigger = (struct lua_trigger *)ptr;
-	int rc = -1;
-	/*
-	 * Create a new coro and reference it. Remove it
-	 * from tarantool_L stack, which is a) scarce
-	 * b) can be used by other triggers while this
-	 * trigger yields, so when it's time to clean
-	 * up the coro, we wouldn't know which stack position
-	 * it is on.
-	 */
-	lua_State *L;
-	int coro_ref = LUA_NOREF;
-	if (fiber()->storage.lua.stack == NULL) {
-		L = luaT_newthread(tarantool_L);
-		if (L == NULL)
-			goto out;
-		coro_ref = luaL_ref(tarantool_L, LUA_REGISTRYINDEX);
-	} else {
-		L = fiber()->storage.lua.stack;
-		coro_ref = LUA_REFNIL;
-	}
-	int top = lua_gettop(L);
+	struct lua_trigger_arg *arg = (struct lua_trigger_arg *)event;
+	lua_State *L = arg->L;
+	int nargs = arg->nargs;
+	int top_svp = lua_gettop(L);
 	lua_rawgeti(L, LUA_REGISTRYINDEX, trigger->ref);
-	/* Lua arguments are passed as a ref to Lua registry. */
-	int args_ref = *(int *)event;
-	lua_rawgeti(L, LUA_REGISTRYINDEX, args_ref);
-	int args_idx = top + 2;
-	int nargs = 0;
-	lua_pushnil(L);
-	while (lua_next(L, args_idx) != 0) {
-		nargs++;
-		lua_insert(L, -2);
-	}
-	lua_remove(L, args_idx);
+	int top = lua_gettop(L);
+	assert(top >= nargs);
+	for (int i = nargs; i > 0; --i)
+		lua_pushvalue(L, top - i);
 	if (luaT_call(L, nargs, LUA_MULTRET) != 0)
-		goto out;
+		return -1;
 	/* Clear the stack - all the returned values are ignored. */
-	lua_settop(L, top);
-	rc = 0;
-out:
-	luaL_unref(tarantool_L, LUA_REGISTRYINDEX, coro_ref);
-	return rc;
+	lua_settop(L, top_svp);
+	return 0;
 }
 
 /**
@@ -225,23 +198,12 @@ luaT_trigger_call(struct lua_State *L)
 	struct event *event = event_registry_get(event_name, false);
 	if (event == NULL)
 		return 0;
-	/* Create table with passed arguments and push it to registry. */
-	int nargs = lua_gettop(L) - 1;
-	lua_createtable(L, nargs, 0);
-	int args_idx = 2;
-	lua_insert(L, args_idx);
-	for (int i = nargs; i > 0; i--) {
-		lua_pushinteger(L, i);
-		lua_insert(L, -2);
-		lua_settable(L, args_idx);
-	}
-	int args_ref = luaL_ref(L, LUA_REGISTRYINDEX);
-	assert(lua_gettop(L) == 1);
-	/* Run triggers with passed pointer to args ref. */
-	if (trigger_run(&event->triggers, &args_ref) != 0)
+	struct lua_trigger_arg arg = {
+		.L = L, .coro_ref = LUA_REFNIL,
+		.nargs = lua_gettop(L) - 1,
+	};
+	if (trigger_run(&event->triggers, &arg) != 0)
 		return luaT_error(L);
-	/* Remove arguments from registry. */
-	luaL_unref(L, LUA_REGISTRYINDEX, args_ref);
 	return 0;
 }
 

@@ -405,3 +405,37 @@ g.test_invalid_args = function()
             errmsg, trigger.set, invalid_name, name, handler)
     end
 end
+
+g.test_nil_args = function()
+    local trigger = require('trigger')
+
+    local event = "my_event"
+    local name = "my_trigger"
+
+    local state = {}
+    local function handler(a1, a2, a3, a4, a5, a6, a7, a8)
+        state = {a1, a2, a3, a4, a5, a6, a7, a8}
+    end
+    trigger.set(event, name, handler)
+    trigger.call(event, 1, 2, nil)
+    t.assert_equals(state, {1, 2})
+    state = {}
+
+    trigger.call(event, 1, nil, 3)
+    t.assert_equals(state, {1, nil, 3})
+    state = {}
+
+    trigger.call(event, nil, 2, 3)
+    t.assert_equals(state, {nil, 2, 3})
+    state = {}
+
+    trigger.call(event, nil, nil, 3)
+    t.assert_equals(state, {nil, nil, 3})
+    state = {}
+
+    trigger.call(event, 1, nil, nil, 4, nil, nil, nil, 8)
+    t.assert_equals(state, {1, nil, nil, 4, nil, nil, nil, 8})
+    state = {}
+
+    trigger.del(event, name)
+end

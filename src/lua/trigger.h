@@ -31,6 +31,7 @@
  * SUCH DAMAGE.
  */
 #include <trigger.h>
+#include <stdint.h>
 
 #if defined(__cplusplus)
 extern "C" {
@@ -89,6 +90,18 @@ typedef int
 int
 lbox_trigger_reset(struct lua_State *L, int top, struct rlist *list,
 		   lbox_push_event_f push_f, lbox_pop_event_f pop_f);
+
+/** Argument for lua_trigger call. */
+struct lua_trigger_arg {
+	/** Lua stack with arguments on the top. */
+	struct lua_State *L;
+	/** Reference to lua thread if it was created. */
+	int coro_ref;
+	/** Number of passed arguments. */
+	int nargs;
+	/** Savepoint for region. */
+	uint32_t region_svp;
+};
 
 /**
  * Initializes module trigger.
