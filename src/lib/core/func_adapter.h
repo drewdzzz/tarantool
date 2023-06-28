@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include "trivia/util.h"
 
 #ifdef __cplusplus
 extern "C" {
