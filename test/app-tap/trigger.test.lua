@@ -6,12 +6,11 @@ box.cfg{
     log = "tarantool.log"
 }
 
-local trigger = require('internal.trigger')
 local test = require('tap').test('trigger')
 
 test:plan(3)
 
-local trigger_list = trigger.new("sweet trigger")
+local trigger_list = require('internal.trigger_list').new("sweet trigger")
 test:ok(trigger_list ~= nil, "test that trigger list is created")
 
 test:test("simple trigger test", function(test)
