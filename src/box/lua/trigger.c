@@ -277,3 +277,192 @@ box_lua_trigger_init(struct lua_State *L)
 	luaL_register_type(L, trigger_iterator_typename,
 			   trigger_iterator_methods);
 }
+
+/**
+ * Old API compatibility.
+ */
+
+/**
+ * Appends a trigger handler to a pre-created array.
+ */
+static int
+luaT_event_push_triggers_old(struct event_trigger *trigger, void *arg)
+{
+	assert(trigger != NULL);
+	assert(trigger->func != NULL);
+	struct push_trigger_arg *push_arg = (struct push_trigger_arg *)arg;
+	lua_State *L = push_arg->L;
+	push_arg->idx++;
+	func_adapter_lua_get_func(trigger->func, L);
+	lua_rawseti(L, -2, push_arg->idx);
+	return 0;
+}
+
+/**
+ * Checks arguments for trigger setter.
+ * Throws an error if the format is not suitable.
+ */
+static void
+luaT_event_reset_trigger_check_input(struct lua_State *L, int bottom)
+{
+	assert(lua_checkstack(L, bottom + 2));
+	/* Push optional arguments. */
+	while (lua_gettop(L) < bottom + 2)
+		lua_pushnil(L);
+	/*
+	 * (nil, function) is OK, deletes the trigger
+	 * (function, nil), is OK, adds the trigger
+	 * (function, function) is OK, replaces the trigger
+	 * no arguments is OK, lists all trigger
+	 * anything else is error.
+	 */
+	bool ok = true;
+	/* Name must be a string if it is passed. */
+	ok = ok && (lua_isnil(L, bottom + 2) || lua_isstring(L, bottom + 2));
+	ok = ok && (lua_isnil(L, bottom + 1) || luaL_iscallable(L, bottom + 1));
+	ok = ok && (lua_isnil(L, bottom) || luaL_iscallable(L, bottom));
+	if (ok)
+		return;
+	luaL_error(L, "trigger reset: incorrect arguments");
+}
+
+/**
+ * Set trigger by name. Returns passed handler.
+ */
+static int
+luaT_event_set_trigger_by_name(struct lua_State *L, struct event *event,
+			       int name_idx, int func_idx)
+{
+	assert(luaL_iscallable(L, func_idx));
+	assert(lua_type(L, name_idx) == LUA_TSTRING);
+
+	struct event_trigger *new_trigger = NULL;
+	const char *trigger_name = lua_tostring(L, name_idx);
+	struct func_adapter *func = func_adapter_lua_create(L, func_idx);
+	new_trigger = event_trigger_new(func, trigger_name);
+	lua_pushvalue(L, func_idx);
+	event_reset_trigger(event, trigger_name, new_trigger, NULL);
+	return 1;
+}
+
+/**
+ * Delete trigger by name. Always returns nothing.
+ */
+static int
+luaT_event_del_trigger_by_name(struct lua_State *L, struct event *event,
+			       int name_idx)
+{
+	assert(lua_type(L, name_idx) == LUA_TSTRING);
+
+	const char *trigger_name = lua_tostring(L, name_idx);
+	event_reset_trigger(event, trigger_name, NULL, NULL);
+	return 0;
+}
+
+/**
+ * Set or delete trigger depending on passed arguments.
+ */
+static int
+luaT_event_reset_trigger_by_name(struct lua_State *L, struct event *event,
+				 int name_idx, int func_idx)
+{
+	if (lua_type(L, name_idx) != LUA_TSTRING)
+		luaL_error(L, "trigger reset: incorrect arguments");
+	if (luaL_iscallable(L, func_idx))
+		return luaT_event_set_trigger_by_name(L, event, name_idx,
+						      func_idx);
+	else if (lua_isnil(L, func_idx) || luaL_isnull(L, func_idx))
+		return luaT_event_del_trigger_by_name(L, event, name_idx);
+	else
+		luaL_error(L, "trigger reset: incorrect arguments");
+	unreachable();
+}
+
+int
+luaT_event_reset_trigger(struct lua_State *L, int bottom, struct event *event)
+{
+	assert(L != NULL);
+	assert(event != NULL);
+	assert(bottom >= 1);
+	/* New way with key-value arguments. */
+	if (lua_gettop(L) == bottom && lua_istable(L, -1) &&
+	    !luaL_iscallable(L, -1)) {
+		lua_getfield(L, bottom, "name");
+		lua_getfield(L, bottom, "func");
+		return luaT_event_reset_trigger_by_name(L, event, -2, -1);
+	}
+	/* Old way with name support. */
+	luaT_event_reset_trigger_check_input(L, bottom);
+	const int top = bottom + 2;
+	if (!lua_isnil(L, top) && !luaL_isnull(L, top)) {
+		if (lua_type(L, top) != LUA_TSTRING)
+			luaL_error(L, "trigger reset: incorrect arguments");
+		return luaT_event_reset_trigger_by_name(L, event, top, bottom);
+	}
+	/*
+	 * Name is not passed - old API support.
+	 * 1. If triggers are not passed, return table of triggers.
+	 * 2. If new_trigger is passed and old_trigger is not - set
+	 * new_trigger using string representation of function as name.
+	 * 3. If old_trigger is passed and new_trigger is not - delete
+	 * trigger with by function string representation as a name.
+	 * 4. If both triggers are provided - replace old_trigger with
+	 * new one and change its name.
+	 */
+	/* Reference the event to safely perform several operation. */
+	event_ref(event);
+	int ret_count = 0;
+	if (lua_isnil(L, bottom) && lua_isnil(L, bottom + 1)) {
+		struct push_trigger_arg arg = {.L = L, .idx = 0};
+		lua_createtable(L, 0, 0);
+		int rc = event_foreach(event, luaT_event_push_triggers_old,
+				       &arg);
+		assert(rc == 0);
+		(void)rc;
+		ret_count = 1;
+	} else if (!lua_isnil(L, bottom) && lua_isnil(L, bottom + 1)) {
+		const char *name = luaT_tolstring(L, bottom, NULL);
+		assert(name != NULL);
+		(void)name;
+		ret_count = luaT_event_set_trigger_by_name(L, event, -1,
+							   bottom);
+	} else if (lua_isnil(L, bottom) && !lua_isnil(L, bottom + 1)) {
+		const char *name = luaT_tolstring(L, bottom + 1, NULL);
+		assert(name != NULL);
+		(void)name;
+		ret_count = luaT_event_del_trigger_by_name(L, event, -1);
+	} else {
+		assert(!lua_isnil(L, bottom) && !lua_isnil(L, bottom + 1));
+		const char *new_name = luaT_tolstring(L, bottom, NULL);
+		const char *old_name = luaT_tolstring(L, bottom + 1, NULL);
+		assert(new_name != NULL);
+		assert(old_name != NULL);
+		bool is_replace = strcmp(new_name, old_name) == 0;
+		struct event_trigger *trg;
+		event_find_trigger(event, old_name, &trg);
+		if (trg == NULL) {
+			event_unref(event);
+			luaL_error(L, "trigger reset: Trigger is not found");
+		}
+		/*
+		 * Delete trigger with new name to avoid duplication.
+		 */
+		if (!is_replace)
+			event_reset_trigger(event, new_name, NULL, NULL);
+		/* TODO: replace in a more convenient way. */
+		trg->name = xstrdup(new_name);
+		struct func_adapter *func =
+			func_adapter_lua_create(L, top - 2);
+		struct event_trigger *new_trg =
+			event_trigger_new(func, new_name);
+		struct event_trigger *old_trg;
+		event_reset_trigger(event, new_name, new_trg, &old_trg);
+		assert(old_trg == trg);
+		free(trg->name);
+		event_trigger_unref(old_trg);
+		lua_pushvalue(L, top - 2);
+		ret_count = 1;
+	}
+	event_unref(event);
+	return ret_count;
+}
