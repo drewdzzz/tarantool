@@ -31,6 +31,7 @@
 #include "error.h"
 #include <stdio.h>
 
+#include "event.h"
 #include "fiber.h"
 #include "rmean.h"
 #include "trigger.h"
@@ -265,7 +266,23 @@ BuildXlogGapError(const char *file, unsigned line,
 	}
 }
 
-struct rlist on_access_denied = RLIST_HEAD_INITIALIZER(on_access_denied);
+struct event *on_access_denied;
+
+int
+run_on_access_denied_trigger(struct event_trigger *trigger, void *arg_base)
+{
+	struct on_access_denied_ctx *arg =
+		(struct on_access_denied_ctx *)arg_base;
+	struct func_adapter *func = trigger->func;
+	struct func_adapter_ctx ctx;
+	func_adapter_begin(func, &ctx);
+	func_adapter_push_str0(func, &ctx, arg->access_type);
+	func_adapter_push_str0(func, &ctx, arg->object_type);
+	func_adapter_push_str0(func, &ctx, arg->object_name);
+	int rc = func_adapter_call(func, &ctx);
+	func_adapter_end(func, &ctx);
+	return rc;
+}
 
 const struct type_info type_AccessDeniedError =
 	make_type("AccessDeniedError", &type_ClientError);
@@ -284,10 +301,12 @@ AccessDeniedError::AccessDeniedError(const char *file, unsigned int line,
 	struct on_access_denied_ctx ctx = {access_type, object_type, object_name};
 	/*
 	 * Don't run the triggers when create after marshaling
-	 * through network.
+	 * through network. Also, run on_access_denied triggers only when
+	 * they are initialized by box module.
 	 */
-	if (run_trigers)
-		trigger_run(&on_access_denied, (void *) &ctx);
+	if (run_trigers && on_access_denied != NULL)
+		event_foreach(on_access_denied, run_on_access_denied_trigger,
+			      &ctx);
 	error_set_str(this, "object_type", object_type);
 	error_set_str(this, "object_name", object_name);
 	error_set_str(this, "access_type", access_type);

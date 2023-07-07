@@ -42,6 +42,8 @@
 #include "watcher.h"
 #include "on_shutdown.h"
 #include "sql.h"
+#include "event.h"
+#include "schema.h"
 
 const char *session_type_strs[] = {
 	"background",
@@ -73,9 +75,9 @@ static RLIST_HEAD(shutdown_list);
 /** Signalled when shutdown_list becomes empty. */
 static struct fiber_cond shutdown_list_empty_cond;
 
-RLIST_HEAD(session_on_connect);
-RLIST_HEAD(session_on_disconnect);
-RLIST_HEAD(session_on_auth);
+struct event *session_on_connect;
+struct event *session_on_disconnect;
+struct event *session_on_auth;
 
 static inline uint64_t
 sid_max(void)
@@ -320,16 +322,34 @@ session_remove_stmt_id(struct session *session, uint32_t stmt_id)
  */
 struct credentials admin_credentials;
 
+/**
+ * Runs an on_connect or on_disconnect trigger.
+ */
 static int
-session_run_triggers(struct session *session, struct rlist *triggers)
+session_run_connect_trigger(struct event_trigger *trigger, void *arg)
 {
-	struct fiber *fiber = fiber();
+	(void)arg;
+	struct func_adapter_ctx ctx;
+	struct func_adapter *func = trigger->func;
+	func_adapter_begin(func, &ctx);
+	int rc = func_adapter_call(func, &ctx);
+	func_adapter_end(func, &ctx);
+	return rc;
+}
+
+/**
+ * Runs all triggers from an on_connect or on_disconnect event.
+ */
+static int
+session_run_connect_triggers(struct session *session, struct event *event)
+{
 	assert(session == current_session());
+	struct fiber *fiber = fiber();
 
 	/* Run triggers with admin credentials */
 	fiber_set_user(fiber, &admin_credentials);
 
-	int rc = trigger_run(triggers, NULL);
+	int rc = event_foreach(event, session_run_connect_trigger, NULL);
 
 	/* Restore original credentials */
 	fiber_set_user(fiber, &session->credentials);
@@ -340,20 +360,37 @@ session_run_triggers(struct session *session, struct rlist *triggers)
 void
 session_run_on_disconnect_triggers(struct session *session)
 {
-	if (session_run_triggers(session, &session_on_disconnect) != 0)
+	if (session_run_connect_triggers(session, session_on_disconnect) != 0)
 		diag_log();
 }
 
 int
 session_run_on_connect_triggers(struct session *session)
 {
-	return session_run_triggers(session, &session_on_connect);
+	return session_run_connect_triggers(session, session_on_connect);
+}
+
+int
+session_run_auth_trigger(struct event_trigger *trigger, void *arg)
+{
+	const struct on_auth_trigger_ctx *auth_ctx =
+		(const struct on_auth_trigger_ctx *)arg;
+	struct func_adapter *func = trigger->func;
+	struct func_adapter_ctx ctx;
+	func_adapter_begin(func, &ctx);
+	func_adapter_push_str(func, &ctx, auth_ctx->user_name,
+			      auth_ctx->user_name_len);
+	func_adapter_push_bool(func, &ctx, auth_ctx->is_authenticated);
+	int rc = func_adapter_call(func, &ctx);
+	func_adapter_end(func, &ctx);
+	return rc;
 }
 
 int
 session_run_on_auth_triggers(const struct on_auth_trigger_ctx *result)
 {
-	return trigger_run(&session_on_auth, (void *)result);
+	return event_foreach(session_on_auth, session_run_auth_trigger,
+			     (void *)result);
 }
 
 void
@@ -420,6 +457,16 @@ session_init(void)
 {
 	for (int type = 0; type < session_type_MAX; type++)
 		session_vtab_registry[type] = generic_session_vtab;
+	session_on_connect = event_registry_get("box.session.on_connect", true);
+	event_ref(session_on_connect);
+	session_on_disconnect =
+		event_registry_get("box.session.on_disconnect", true);
+	event_ref(session_on_disconnect);
+	session_on_auth = event_registry_get("box.session.on_auth", true);
+	event_ref(session_on_auth);
+	on_access_denied =
+		event_registry_get("box.session.on_access_denied", true);
+	event_ref(on_access_denied);
 	session_registry = mh_i64ptr_new();
 	mempool_create(&session_pool, &cord()->slabc, sizeof(struct session));
 	credentials_create(&admin_credentials, admin_user);
@@ -432,6 +479,14 @@ session_init(void)
 void
 session_free(void)
 {
+	event_unref(session_on_connect);
+	session_on_connect = NULL;
+	event_unref(session_on_disconnect);
+	session_on_disconnect = NULL;
+	event_unref(session_on_auth);
+	session_on_auth = NULL;
+	event_unref(on_access_denied);
+	on_access_denied = NULL;
 	if (session_registry)
 		mh_i64ptr_delete(session_registry);
 	credentials_destroy(&admin_credentials);

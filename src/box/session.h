@@ -187,9 +187,10 @@ struct session *
 session_find(uint64_t sid);
 
 /** Global on-connect triggers. */
-extern struct rlist session_on_connect;
+extern struct event *session_on_connect;
 
-extern struct rlist session_on_auth;
+/** Global on-auth triggers. */
+extern struct event *session_on_auth;
 
 /**
  * Get the current session from @a fiber
@@ -291,7 +292,7 @@ effective_user(void)
 }
 
 /** Global on-disconnect triggers. */
-extern struct rlist session_on_disconnect;
+extern struct event *session_on_disconnect;
 
 void
 session_storage_cleanup(int sid);

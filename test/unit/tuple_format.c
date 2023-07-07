@@ -7,6 +7,7 @@
 
 #include "coll/coll.h"
 
+#include "core/event.h"
 #include "core/fiber.h"
 #include "core/memory.h"
 
@@ -206,12 +207,14 @@ main(void)
 	fiber_init(fiber_c_invoke);
 	coll_init();
 	tuple_init(test_field_name_hash);
+	event_registry_init();
 	box_init();
 	sql_init();
 
 	int rc = test_tuple_format();
 
 	box_free();
+	event_registry_free();
 	tuple_free();
 	coll_free();
 	fiber_free();
