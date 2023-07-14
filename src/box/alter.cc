@@ -60,6 +60,7 @@
 #include "box.h"
 #include "authentication.h"
 #include "node_name.h"
+#include "box/func_adapter.h"
 
 /* {{{ Auxiliary functions and methods. */
 
@@ -3288,11 +3289,34 @@ func_def_new_from_tuple(struct tuple *tuple)
 	return def;
 }
 
+static void
+func_alter_triggers(struct func *func, bool set)
+{
+	struct func_def *def = func->def;
+	const char *triggers = def->triggers;
+	if (triggers == NULL)
+		return;
+	uint32_t trigger_count = mp_decode_array(&triggers);
+	for (uint32_t i = 0; i < trigger_count; i++) {
+		assert(mp_typeof(*triggers) == MP_STR);
+		uint32_t len;
+		const char *event_name = mp_decode_str(&triggers, &len);
+		const char *event_name_cstr = tt_cstr(event_name, len);
+		struct event *event = event_get(event_name_cstr, true);
+		const char *trg_name = tt_cstr(def->name, def->name_len);
+		struct func_adapter *trg = NULL;
+		if (set)
+			trg = func_adapter_func_create(func);
+		event_reset_trigger(event, trg_name, trg);
+	};
+}
+
 static int
 on_create_func_rollback(struct trigger *trigger, void * /* event */)
 {
 	/* Remove the new function from the cache and delete it. */
 	struct func *func = (struct func *)trigger->data;
+	func_alter_triggers(func, false);
 	func_cache_delete(func->def->fid);
 	if (trigger_run(&on_alter_func, func) != 0)
 		return -1;
@@ -3315,6 +3339,7 @@ on_drop_func_rollback(struct trigger *trigger, void * /* event */)
 	/* Insert the old function back into the cache. */
 	struct func *func = (struct func *)trigger->data;
 	func_cache_insert(func);
+	func_alter_triggers(func, true);
 	if (trigger_run(&on_alter_func, func) != 0)
 		return -1;
 	return 0;
@@ -3355,6 +3380,7 @@ on_replace_dd_func(struct trigger * /* trigger */, void *event)
 		if (func == NULL)
 			return -1;
 		func_cache_insert(func);
+		func_alter_triggers(func, true);
 		on_rollback->data = func;
 		txn_stmt_on_rollback(stmt, on_rollback);
 		if (trigger_run(&on_alter_func, func) != 0)
@@ -3406,6 +3432,7 @@ on_replace_dd_func(struct trigger * /* trigger */, void *event)
 			txn_alter_trigger_new(on_drop_func_rollback, old_func);
 		if (on_commit == NULL || on_rollback == NULL)
 			return -1;
+		func_alter_triggers(old_func, false);
 		func_cache_delete(old_func->def->fid);
 		txn_stmt_on_commit(stmt, on_commit);
 		txn_stmt_on_rollback(stmt, on_rollback);
