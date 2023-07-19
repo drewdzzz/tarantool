@@ -87,7 +87,7 @@ typedef int
  *        optional).
  */
 int
-lbox_trigger_reset(struct lua_State *L, int top, struct rlist *list,
+lbox_trigger_reset(struct lua_State *L, int bottom, struct rlist *list,
 		   lbox_push_event_f push_f, lbox_pop_event_f pop_f);
 
 #if defined(__cplusplus)

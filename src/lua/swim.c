@@ -54,7 +54,7 @@ lua_swim_on_member_event(struct lua_State *L)
 {
 	uint32_t ctypeid;
 	struct swim *s = *(struct swim **) luaL_checkcdata(L, 1, &ctypeid);
-	return lbox_trigger_reset(L, 3, swim_trigger_list_on_member_event(s),
+	return lbox_trigger_reset(L, 2, swim_trigger_list_on_member_event(s),
 				  lua_swim_member_event_push, NULL);
 }
 

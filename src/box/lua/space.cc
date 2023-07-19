@@ -157,7 +157,7 @@ lbox_space_on_replace(struct lua_State *L)
 	struct space *space = space_cache_find_xc(id);
 	lua_pop(L, 1);
 
-	return lbox_trigger_reset(L, 3, &space->on_replace,
+	return lbox_trigger_reset(L, 2, &space->on_replace,
 				  lbox_push_txn_stmt, NULL);
 }
 
@@ -178,7 +178,7 @@ lbox_space_before_replace(struct lua_State *L)
 	struct space *space = space_cache_find_xc(id);
 	lua_pop(L, 1);
 
-	return lbox_trigger_reset(L, 3, &space->before_replace,
+	return lbox_trigger_reset(L, 2, &space->before_replace,
 				  lbox_push_txn_stmt, lbox_pop_txn_stmt);
 }
 

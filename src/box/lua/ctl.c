@@ -72,14 +72,14 @@ lbox_ctl_wait_rw(struct lua_State *L)
 static int
 lbox_ctl_on_shutdown(struct lua_State *L)
 {
-	return lbox_trigger_reset(L, 2, &box_on_shutdown_trigger_list,
+	return lbox_trigger_reset(L, 1, &box_on_shutdown_trigger_list,
 				  NULL, NULL);
 }
 
 static int
 lbox_ctl_on_schema_init(struct lua_State *L)
 {
-	return lbox_trigger_reset(L, 2, &on_schema_init, NULL, NULL);
+	return lbox_trigger_reset(L, 1, &on_schema_init, NULL, NULL);
 }
 
 static int
@@ -92,13 +92,13 @@ lbox_push_recovery_state(struct lua_State *L, void *event)
 static int
 lbox_ctl_on_recovery_state(struct lua_State *L)
 {
-	return lbox_trigger_reset(L, 2, &box_on_recovery_state,
+	return lbox_trigger_reset(L, 1, &box_on_recovery_state,
 				  lbox_push_recovery_state, NULL);
 }
 static int
 lbox_ctl_on_election(struct lua_State *L)
 {
-	return lbox_trigger_reset(L, 2, &box_raft_on_broadcast, NULL, NULL);
+	return lbox_trigger_reset(L, 1, &box_raft_on_broadcast, NULL, NULL);
 }
 
 static int

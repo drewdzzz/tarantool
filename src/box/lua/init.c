@@ -603,7 +603,7 @@ lbox_on_##name(struct lua_State *L) {                                          \
 				  "[function | nil]])");                       \
 	}                                                                      \
 	txn_init_triggers(txn);                                                \
-	return lbox_trigger_reset(L, 2, &txn->on_##name, lbox_push_txn, NULL); \
+	return lbox_trigger_reset(L, 1, &txn->on_##name, lbox_push_txn, NULL); \
 }
 
 LBOX_TXN_TRIGGER(commit)

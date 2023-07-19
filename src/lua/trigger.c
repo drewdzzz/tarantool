@@ -36,6 +36,8 @@
 struct lbox_trigger
 {
 	struct trigger base;
+	/** An optional name. */
+	char *name;
 	/** A reference to Lua trigger function. */
 	int ref;
 	/*
@@ -55,8 +57,10 @@ struct lbox_trigger
 static void
 lbox_trigger_destroy(struct trigger *ptr)
 {
+	struct lbox_trigger *trigger = (struct lbox_trigger *) ptr;
+	if (trigger->name != NULL)
+		free(trigger->name);
 	if (tarantool_L) {
-		struct lbox_trigger *trigger = (struct lbox_trigger *) ptr;
 		luaL_unref(tarantool_L, LUA_REGISTRYINDEX, trigger->ref);
 		TRASH(trigger);
 	}
@@ -128,14 +132,22 @@ out:
 }
 
 static struct lbox_trigger *
-lbox_trigger_find(struct lua_State *L, int index, struct rlist *list)
+lbox_trigger_find(struct lua_State *L, int trg_idx, int name_idx,
+		  struct rlist *list)
 {
 	struct lbox_trigger *trigger;
+	const char *name = lua_tostring(L, name_idx);
 	/** Find the old trigger, if any. */
 	rlist_foreach_entry(trigger, list, base.link) {
 		if (trigger->base.run == lbox_trigger_run) {
-			lua_rawgeti(L, LUA_REGISTRYINDEX, trigger->ref);
-			bool found = lua_equal(L, index, lua_gettop(L));
+			bool found = false;
+			if (name != NULL) {
+				found = trigger->name != NULL &&
+					strcmp(trigger->name, name) == 0;
+			} else {
+				lua_rawgeti(L, LUA_REGISTRYINDEX, trigger->ref);
+				found = lua_equal(L, trg_idx, lua_gettop(L));
+			}
 			lua_pop(L, 1);
 			if (found)
 				return trigger;
@@ -150,7 +162,7 @@ lbox_list_all_triggers(struct lua_State *L, struct rlist *list)
 	struct lbox_trigger *trigger;
 	int count = 1;
 	lua_newtable(L);
-	rlist_foreach_entry_reverse(trigger, list, base.link) {
+	rlist_foreach_entry(trigger, list, base.link) {
 		if (trigger->base.run == lbox_trigger_run) {
 			lua_rawgeti(L, LUA_REGISTRYINDEX, trigger->ref);
 			lua_rawseti(L, -2, count);
@@ -161,54 +173,70 @@ lbox_list_all_triggers(struct lua_State *L, struct rlist *list)
 }
 
 static void
-lbox_trigger_check_input(struct lua_State *L, int top)
+lbox_trigger_check_input(struct lua_State *L, int bottom)
 {
+	const int top = bottom + 2;
 	assert(lua_checkstack(L, top));
 	/* Push optional arguments. */
 	while (lua_gettop(L) < top)
 		lua_pushnil(L);
 	/*
-	 * (nil, function) is OK, deletes the trigger
-	 * (function, nil), is OK, adds the trigger
-	 * (function, function) is OK, replaces the trigger
+	 * (nil, callable, nil) is OK, deletes the trigger by object
+	 * (nil, callable, string) is OK, deletes the trigger by name
+	 * (callable, nil, nil), is OK, adds the trigger without name
+	 * (callable, nil, string), is OK, adds the trigger with name
+	 * (callable, callable, nil) is OK, replaces the trigger
+	 * (callable, callable, string) is OK, replaces the trigger by name,
+	 * but the second argument is ignored.
 	 * no arguments is OK, lists all trigger
 	 * anything else is error.
 	 */
-	if ((lua_isnil(L, top) && lua_isnil(L, top - 1)) ||
-	    (lua_isfunction(L, top) && lua_isnil(L, top - 1)) ||
-	    (lua_isnil(L, top) && lua_isfunction(L, top - 1)) ||
-	    (lua_isfunction(L, top) && lua_isfunction(L, top - 1)))
+	const int new_idx = bottom;
+	const int old_idx = bottom + 1;
+	const int name_idx = bottom + 2;
+	bool name_is_ok = lua_isnil(L, name_idx) || luaL_isnull(L, name_idx) ||
+		lua_type(L, name_idx) == LUA_TSTRING;
+	bool new_is_ok = lua_isnil(L, new_idx) || luaL_isnull(L, new_idx) ||
+		luaL_iscallable(L, new_idx);
+	bool old_is_ok = lua_isnil(L, old_idx) || luaL_isnull(L, old_idx) ||
+		luaL_iscallable(L, old_idx);
+	if (name_is_ok && new_is_ok && old_is_ok)
 		return;
 
 	luaL_error(L, "trigger reset: incorrect arguments");
 }
 
 int
-lbox_trigger_reset(struct lua_State *L, int top, struct rlist *list,
+lbox_trigger_reset(struct lua_State *L, int bottom, struct rlist *list,
 		   lbox_push_event_f push_event, lbox_pop_event_f pop_event)
 {
 	/**
 	 * If the stack is empty, pushes nils for optional
 	 * arguments
 	 */
-	lbox_trigger_check_input(L, top);
+	lbox_trigger_check_input(L, bottom);
+	const int new_trg_idx = bottom;
+	const int old_trg_idx = bottom + 1;
+	const int name_idx = bottom + 2;
 	/* If no args - return triggers table */
-	if (lua_isnil(L, top) && lua_isnil(L, top - 1))
+	if ((lua_isnil(L, new_trg_idx) || luaL_isnull(L, new_trg_idx)) &&
+	    (lua_isnil(L, old_trg_idx) || luaL_isnull(L, old_trg_idx)) &&
+	    (lua_isnil(L, name_idx) || luaL_isnull(L, name_idx)))
 		return lbox_list_all_triggers(L, list);
 
-	struct lbox_trigger *trg = lbox_trigger_find(L, top, list);
+	struct lbox_trigger *trg = lbox_trigger_find(L, old_trg_idx, name_idx,
+						     list);
 
 	if (trg) {
 		luaL_unref(L, LUA_REGISTRYINDEX, trg->ref);
-
-	} else if (lua_isfunction(L, top)) {
+	} else if (luaL_iscallable(L, old_trg_idx)) {
 		return luaL_error(L, "trigger reset: Trigger is not found");
 	}
 	/*
 	 * During update of a trigger, we must preserve its
 	 * relative position in the list.
 	 */
-	if (lua_isfunction(L, top - 1)) {
+	if (luaL_iscallable(L, new_trg_idx)) {
 		if (trg == NULL) {
 			trg = (struct lbox_trigger *) malloc(sizeof(*trg));
 			if (trg == NULL)
@@ -216,6 +244,14 @@ lbox_trigger_reset(struct lua_State *L, int top, struct rlist *list,
 			trigger_create(&trg->base, lbox_trigger_run, NULL,
 				       lbox_trigger_destroy);
 			trg->ref = LUA_NOREF;
+			trg->name = NULL;
+			if (!lua_isnil(L, name_idx) &&
+			    !luaL_isnull(L, name_idx)) {
+				size_t name_len = 0;
+				const char *name = lua_tolstring(L, name_idx,
+								 &name_len);
+				trg->name = xstrndup(name, name_len);
+			}
 			trg->push_event = push_event;
 			trg->pop_event = pop_event;
 			trigger_add(list, &trg->base);
@@ -224,12 +260,11 @@ lbox_trigger_reset(struct lua_State *L, int top, struct rlist *list,
 		 * Make the new trigger occupy the top
 		 * slot of the Lua stack.
 		 */
-		lua_pop(L, 1);
+		lua_pushvalue(L, new_trg_idx);
 		/* Reference. */
 		trg->ref = luaL_ref(L, LUA_REGISTRYINDEX);
 		lua_rawgeti(L, LUA_REGISTRYINDEX, trg->ref);
 		return 1;
-
 	} else if (trg) {
 		trigger_clear(&trg->base);
 		TRASH(trg);
