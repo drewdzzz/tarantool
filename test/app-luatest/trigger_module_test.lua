@@ -511,3 +511,126 @@ g.test_info_no_empty_events = function()
     t.assert_equals(trigger.info(event_name), {})
     t.assert_equals(trigger.info(), {})
 end
+
+g.test_trigger_on_change = function()
+    local trigger = require('trigger')
+    local story = {}
+    local function nop() end
+    local function another_nop() end
+    local handlers = {}
+    local throw_error = false
+    for i = 1, 3 do
+        handlers[i] = function(event_name, arg2)
+            t.assert_equals(arg2, nil)
+            t.assert_type(event_name, 'string')
+            local event_info = trigger.info(event_name)[event_name]
+            local event_len = event_info == nil and 0 or #event_info
+            table.insert(story, {'handlers[' .. tostring(i) .. ']', event_name,
+                                 event_len})
+        end
+    end
+    local function handler_err(event_name)
+        local event_info = trigger.info(event_name)[event_name]
+        local event_len = event_info == nil and 0 or #event_info
+        table.insert(story, {'handler_err', event_name, event_len})
+        if throw_error then
+            error('err')
+        end
+    end
+
+    -- Test how tarantool.trigger.on_change works on itself
+    local on_change = 'tarantool.trigger.on_change'
+
+    trigger.set(on_change, 'h2', handlers[2])
+    t.assert_equals(story, {{'handlers[2]', on_change, 1}})
+    story = {}
+
+    trigger.set(on_change, 'h_err', handler_err)
+    t.assert_equals(story, {{'handler_err', on_change, 2},
+                            {'handlers[2]', on_change, 2}})
+    story = {}
+
+    trigger.set(on_change, 'h1', handlers[1])
+    t.assert_equals(story, {{'handlers[1]', on_change, 3},
+                            {'handler_err', on_change, 3},
+                            {'handlers[2]', on_change, 3}})
+    story = {}
+
+    -- Check if all called triggers are called after error
+    throw_error = true
+
+    trigger.del(on_change, 'h1')
+    t.assert_equals(story, {{'handler_err', on_change, 2}})
+    story = {}
+
+    trigger.del(on_change, 'h2')
+    t.assert_equals(story, {{'handlers[1]', on_change, 2},
+                            {'handler_err', on_change, 2},
+                            {'handlers[1]', on_change, 3}})
+    story = {}
+    trigger.set(on_change, 'h2', handlers[3])
+    t.assert_equals(story, {{'handlers[1]', on_change, 3},
+                            {'handler_err', on_change, 3},
+                            {'handlers[1]', on_change, 3}})
+    story = {}
+    trigger.set(on_change, 'h1', handlers[3])
+    t.assert_equals(story, {{'handlers[3]', on_change, 3},
+                            {'handler_err', on_change, 3},
+                            {'handlers[3]', on_change, 3}})
+    story = {}
+
+    throw_error = false
+
+    local test_event = 'test_event'
+    trigger.set(test_event, 'h1', nop)
+    local event_info = {[test_event] = {{'h1', nop}}}
+    t.assert_equals(story, {{'handlers[1]', test_event, 1},
+                            {'handler_err', test_event, 1},
+                            {'handlers[2]', test_event, 1}})
+    story = {}
+    t.assert_equals(trigger.info(test_event), event_info)
+
+    throw_error = true
+
+    trigger.set(test_event, 'h2', nop)
+    -- handlers[2] must not be called
+    -- handlers[1] must be call twice - the second time is after error
+    t.assert_equals(story, {{'handlers[1]', test_event, 2},
+                            {'handler_err', test_event, 2},
+                            {'handlers[1]', test_event, 1}})
+    story = {}
+    -- new trigger must not be inserted
+    t.assert_equals(trigger.info(test_event), event_info)
+    trigger.del(test_event, 'h1')
+    t.assert_equals(story, {{'handlers[1]', test_event, 0},
+                            {'handler_err', test_event, 0},
+                            {'handlers[1]', test_event, 1}})
+    story = {}
+    -- trigger must not be deleted
+    t.assert_equals(trigger.info(test_event), event_info)
+
+    trigger.set(test_event, 'h1', another_nop)
+    -- handlers[2] must not be called
+    -- handlers[1] must be call twice - the second time is after error
+    t.assert_equals(story, {{'handlers[1]', test_event, 1},
+                            {'handler_err', test_event, 1},
+                            {'handlers[1]', test_event, 1}})
+    story = {}
+    -- trigger must not be replaced
+    t.assert_equals(trigger.info(test_event), event_info)
+
+    throw_error = false
+    trigger.del(test_event, 'h1')
+
+    throw_error = true
+    story = {}
+    trigger.set(test_event, 'h1', nop)
+    -- handlers[2] must not be called
+    -- handlers[1] must be call twice - the second time is after error
+    t.assert_equals(story, {{'handlers[1]', test_event, 1},
+                            {'handler_err', test_event, 1},
+                            {'handlers[1]', test_event, 0}})
+    story = {}
+    -- trigger must not be replaced
+    t.assert_equals(trigger.info(test_event), {})
+end

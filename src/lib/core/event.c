@@ -15,6 +15,9 @@
 /** Registry of all events: name -> event. */
 static struct mh_strnptr_t *event_registry;
 
+/** Cached event 'tarantool.trigger.on_change'. */
+static struct event *on_change_event;
+
 /**
  * A named node of the list, containing func_adapter. Every event_trigger is
  * associated with an event. Since event_triggers have completely different
@@ -175,6 +178,115 @@ event_find_trigger(struct event *event, const char *name)
 	return trigger != NULL ? trigger->func : NULL;
 }
 
+/**
+ * Data required for successful rollback. In the case when modified event
+ * is tarantool.trigger.on_change itself, we need to call the new trigger
+ * despite the fact it was removed on rollback and do not call old trigger
+ * even though it was restored.
+ */
+struct event_on_change_rollback_info {
+	/** A trigger that was removed. */
+	struct func_adapter *old;
+	/** A trigger that was inserted. */
+	struct func_adapter *new;
+	/**
+	 * Current trigger. If it is not NULL, this trigger threw an error
+	 * which caused the rollback.
+	 */
+	struct func_adapter *curr;
+	/**
+	 * A trigger that was fired before the new one. Is NULL if new trigger
+	 * was not fired or was fired first.
+	 */
+	struct func_adapter *last;
+	/** Is set if the new trigger was fired. */
+	bool new_trigger_fired;
+};
+
+/**
+ * Fires on_change triggers and initializes rollback info.
+ * Must be called after the change is applied.
+ * Returns 0 on success. If the function failed, changes must be
+ * rolled back and event_on_change_rollback must be called.
+ */
+static int
+event_on_change(struct event *event, struct func_adapter *new_trigger,
+		struct func_adapter *old_trigger,
+		struct event_on_change_rollback_info *info)
+{
+	info->new = new_trigger;
+	info->old = old_trigger;
+	info->new_trigger_fired = false;
+	info->last = NULL;
+	info->curr = NULL;
+	if (!event_has_triggers(on_change_event))
+		return 0;
+	struct event_trigger_iterator it;
+	event_trigger_iterator_create(&it, on_change_event);
+	struct func_adapter *func;
+	const char *name;
+	struct func_adapter_ctx ctx;
+	int rc = 0;
+	while (rc == 0 && event_trigger_iterator_next(&it, &func, &name)) {
+		func_adapter_begin(func, &ctx);
+		func_adapter_push_str0(func, &ctx, event->name);
+		rc = func_adapter_call(func, &ctx);
+		func_adapter_end(func, &ctx);
+		if (func == new_trigger) {
+			info->new_trigger_fired = true;
+			info->last = info->curr;
+		}
+		info->curr = func;
+	}
+	event_trigger_iterator_destroy(&it);
+	if (rc == 0) {
+		info->curr = NULL;
+		return 0;
+	}
+	return rc;
+}
+
+/**
+ * Fires all the triggers that were invoked in event_on_change. Must be called
+ * after the change is rolled back.
+ */
+static void
+event_on_change_rollback(struct event *event,
+			 struct event_on_change_rollback_info *info)
+{
+	struct event_trigger_iterator it;
+	event_trigger_iterator_create(&it, on_change_event);
+	struct func_adapter *func;
+	const char *name;
+	struct func_adapter_ctx ctx;
+	/* Fire the new trigger firstly if it was inserted at the beginning. */
+	if (info->new_trigger_fired && info->last == NULL) {
+		func_adapter_begin(info->new, &ctx);
+		func_adapter_push_str0(info->new, &ctx, event->name);
+		func_adapter_call(info->new, &ctx);
+		func_adapter_end(info->new, &ctx);
+	}
+	while (event_trigger_iterator_next(&it, &func, &name) &&
+	       func != info->curr) {
+		/* New trigger must be deleted. */
+		assert(func != info->new);
+		/* Old trigger was not fired on change - it was deleted. */
+		if (func == info->old)
+			continue;
+		func_adapter_begin(func, &ctx);
+		func_adapter_push_str0(func, &ctx, event->name);
+		func_adapter_call(func, &ctx);
+		func_adapter_end(func, &ctx);
+		if (func == info->last) {
+			func_adapter_begin(info->new, &ctx);
+			func_adapter_push_str0(info->new, &ctx, event->name);
+			func_adapter_call(info->new, &ctx);
+			func_adapter_end(info->new, &ctx);
+		}
+	}
+	event_trigger_iterator_destroy(&it);
+}
+
 void
 event_reset_trigger(struct event *event, const char *name,
 		    struct func_adapter *new_trigger)
@@ -183,10 +295,10 @@ event_reset_trigger(struct event *event, const char *name,
 	assert(name != NULL);
 	struct event_trigger *found_trigger =
 		event_find_trigger_internal(event, name);
+	struct event_trigger *trigger = NULL;
 	if (new_trigger != NULL) {
 		event->trigger_count++;
-		struct event_trigger *trigger =
-			event_trigger_new(new_trigger, event, name);
+		trigger = event_trigger_new(new_trigger, event, name);
 		event_trigger_ref(trigger);
 		if (found_trigger == NULL) {
 			rlist_add_entry(&event->triggers, trigger, link);
@@ -201,11 +313,33 @@ event_reset_trigger(struct event *event, const char *name,
 		}
 	}
 	if (found_trigger != NULL) {
+		/* Old trigger can be restored so will be unreferenced later. */
 		assert(event->trigger_count > 0);
 		event->trigger_count--;
 		found_trigger->is_deleted = true;
-		event_trigger_unref(found_trigger);
 	}
+	struct event_on_change_rollback_info rollback_info;
+	struct func_adapter *found_trigger_func =
+		found_trigger == NULL ? NULL : found_trigger->func;
+	int rc = event_on_change(event, new_trigger, found_trigger_func,
+				 &rollback_info);
+	if (rc == 0) {
+		if (found_trigger != NULL)
+			event_trigger_unref(found_trigger);
+		return;
+	}
+	if (trigger != NULL) {
+		assert(event->trigger_count > 0);
+		trigger->is_deleted = true;
+		event->trigger_count--;
+	}
+	if (found_trigger != NULL) {
+		found_trigger->is_deleted = false;
+		event->trigger_count++;
+	}
+	event_on_change_rollback(event, &rollback_info);
+	if (trigger != NULL)
+		event_trigger_unref(trigger);
 }
 
 void
@@ -309,12 +443,17 @@ void
 event_init(void)
 {
 	event_registry = mh_strnptr_new();
+	on_change_event = event_get("tarantool.trigger.on_change", true);
+	event_ref(on_change_event);
 }
 
 void
 event_free(void)
 {
 	assert(event_registry != NULL);
+	assert(on_change_event != NULL);
+	event_unref(on_change_event);
+	on_change_event = NULL;
 	struct mh_strnptr_t *h = event_registry;
 	mh_int_t i;
 	mh_foreach(h, i) {
