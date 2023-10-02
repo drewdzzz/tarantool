@@ -6,6 +6,11 @@ local g = t.group()
 g.before_all(function(cg)
     cg.server = server:new{
         alias   = 'dflt',
+        box_cfg = {
+            -- All iproto override warnings are
+            -- expected to be logged with error level
+            log_level = 2,
+        },
     }
     cg.server:start()
     cg.server:exec(function(net_box_uri)
@@ -22,25 +27,35 @@ g.before_all(function(cg)
         rawset(_G, 's', s)
 
         rawset(_G, 'header_is_ok', false)
+        rawset(_G, 'header_translation_is_ok', false)
         rawset(_G, 'body_is_ok', false)
+        rawset(_G, 'body_translation_is_ok', false)
         rawset(_G, 'body_is_empty', false)
         local resp = {0}
         rawset(_G, 'cb',
                function(header, body)
                     _G.header_is_ok = msgpack.is_object(header) and
+                            header[box.iproto.key.SYNC] == 1 and
+                            header[box.iproto.key.SPACE_ID] == 2 and
+                            header[box.iproto.key.INDEX_ID] == 3
+                    _G.header_translation_is_ok = msgpack.is_object(header) and
                             header.sync == 1 and
                             header.SPACE_ID == 2 and
-                            header[box.iproto.key.INDEX_ID] == 3
+                            header.INDEX_ID == 3
                     _G.body_is_ok = msgpack.is_object(body) and
+                            body[box.iproto.key.OPTIONS] == 3 and
+                            body[box.iproto.key.STMT_ID] == 4 and
+                            body[box.iproto.key.SQL_TEXT] == 'text'
+                    _G.body_translation_is_ok = msgpack.is_object(body) and
                             body.options == 3 and
                             body.STMT_ID == 4 and
-                            body[box.iproto.key.SQL_TEXT] == 'text'
+                            body.SQL_TEXT == 'text'
                     _G.body_is_empty = next(body:decode()) == nil
                     box.iproto.send(box.session.id(), resp)
                     return true
         end)
         rawset(_G, 'test_cb_resp',
-               function(header, body)
+               function(header, body, check_translation)
                    local mp_header = msgpack.encode(header)
                    local mp_body = (body ~= nil and msgpack.encode(body)) or ''
                    local mp_packet_len = msgpack.encode(#mp_header + #mp_body)
@@ -51,9 +66,15 @@ g.before_all(function(cg)
                    local packet = s:read(packet_size)
                    t.assert(_G.header_is_ok)
                    _G.header_is_ok = false
+                   if check_translation then
+                       t.assert(_G.header_translation_is_ok)
+                   end
                    if body ~= nil then
                        t.assert(_G.body_is_ok)
                        _G.body_is_ok = false
+                       if check_translation then
+                           t.assert(_G.body_translation_is_ok)
+                       end
                    else
                        t.assert(_G.body_is_empty)
                        _G.body_is_empty = false
@@ -133,7 +154,14 @@ end
 
 -- Checks that `box.iproto.override` errors are handled correctly.
 g.test_box_iproto_override_errors = function(cg)
-    cg.server:exec(function()
+    local unsupported_rq_types = {
+        JOIN = box.iproto.type.JOIN,
+        FETCH_SNAPSHOT = box.iproto.type.FETCH_SNAPSHOT,
+        REGISTER = box.iproto.type.REGISTER,
+        SUBSCRIBE = box.iproto.type.SUBSCRIBE,
+    }
+    cg.server:exec(function(unsupported_rq_types)
+        local trigger = require('trigger')
         local err_msg = "Usage: box.iproto.override(request_type, callback)"
         t.assert_error_msg_content_equals(err_msg, function()
             box.iproto.override()
@@ -153,33 +181,46 @@ g.test_box_iproto_override_errors = function(cg)
         t.assert_error_msg_content_equals(err_msg, function()
             box.iproto.override(0, 'str')
         end)
-        local unsupported_rq_types = {
-            JOIN = box.iproto.type.JOIN,
-            FETCH_SNAPSHOT = box.iproto.type.FETCH_SNAPSHOT,
-            REGISTER = box.iproto.type.REGISTER,
-            SUBSCRIBE = box.iproto.type.SUBSCRIBE,
-        }
         for rq_name, rq_type in pairs(unsupported_rq_types) do
             err_msg = ("IPROTO request handler overriding does not " ..
                        "support %s request type"):format(rq_name)
             t.assert_error_msg_content_equals(err_msg, function()
                 box.iproto.override(rq_type, function() end)
             end)
+
+            local event_name = "box.iproto.override." .. rq_name:lower()
+            trigger.set(event_name, "test_handler", function() end)
+            trigger.del(event_name, "test_handler")
         end
-    end)
+    end, {unsupported_rq_types})
+    for rq_name, _ in pairs(unsupported_rq_types) do
+        local msg = ("IPROTO request handler overriding does not " ..
+                     "support %s request type"):format(rq_name:lower())
+        t.assert(cg.server:grep_log(msg))
+    end
 end
 
 -- Checks that `box.iproto.override` reset of non-existing request handler is
 -- handled correctly.
 g.test_box_iproto_override_non_existing_request = function(cg)
-    cg.server:exec(function()
+    local req_type = 'invalid_req_type'
+    local event_name = 'box.iproto.override.' .. req_type
+    cg.server:exec(function(event_name)
+        local trigger = require('trigger')
         box.iproto.override(777, nil)
-    end)
+
+        trigger.set(event_name, "test_handler", function() end)
+        trigger.del(event_name, "test_handler")
+    end, {event_name})
+    local msg = ("The event %s is in iproto override namespace but %s is " ..
+                 "not a request type"):format(event_name, req_type)
+    t.assert(cg.server:grep_log(msg))
 end
 
 -- Checks that `box.iproto.override` works correctly for basic request types.
 g.test_box_iproto_override_basic_rq_types = function(cg)
     cg.server:exec(function()
+        local trigger = require('trigger')
         local header = setmetatable(
                     {
                         [box.iproto.key.SYNC] = 1,
@@ -192,32 +233,39 @@ g.test_box_iproto_override_basic_rq_types = function(cg)
                         [box.iproto.key.STMT_ID] = 4,
                         [box.iproto.key.SQL_TEXT] = 'text'
                     }, {__serialize = 'map'})
-        local rq_types = {
-            box.iproto.type.SELECT,
-            box.iproto.type.INSERT,
-            box.iproto.type.REPLACE,
-            box.iproto.type.UPDATE,
-            box.iproto.type.DELETE,
-            box.iproto.type.UPSERT,
-            box.iproto.type.CALL_16,
-            box.iproto.type.CALL,
-            box.iproto.type.EVAL,
-            box.iproto.type.WATCH,
-            box.iproto.type.UNWATCH,
-            box.iproto.type.EXECUTE,
-            box.iproto.type.PREPARE,
-            box.iproto.type.PING,
-            box.iproto.type.ID,
-            box.iproto.type.VOTE_DEPRECATED,
-            box.iproto.type.VOTE,
-            box.iproto.type.AUTH,
+        local rq_names = {
+            'SELECT',
+            'INSERT',
+            'REPLACE',
+            'UPDATE',
+            'DELETE',
+            'UPSERT',
+            'CALL_16',
+            'CALL',
+            'EVAL',
+            'WATCH',
+            'UNWATCH',
+            'EXECUTE',
+            'PREPARE',
+            'PING',
+            'ID',
+            'VOTE_DEPRECATED',
+            'VOTE',
+            'AUTH',
         }
-        for _, rq_type in ipairs(rq_types) do
+        for _, rq_name in ipairs(rq_names) do
+            local rq_type = box.iproto.type[rq_name]
             box.iproto.override(rq_type, _G.cb)
             header[box.iproto.key.REQUEST_TYPE] = rq_type
-            _G.test_cb_resp(header, body)
-            _G.test_cb_resp(header)
+            _G.test_cb_resp(header, body, true)
+            _G.test_cb_resp(header, nil ,true)
             box.iproto.override(rq_type, nil)
+
+            local event_name = 'box.iproto.override.' .. rq_name:lower()
+            trigger.set(event_name, 'test_handler', _G.cb)
+            _G.test_cb_resp(header, body, false)
+            _G.test_cb_resp(header, nil, false)
+            trigger.del(event_name, 'test_handler')
         end
     end)
 end
@@ -225,6 +273,7 @@ end
 -- Checks that `box.iproto.override` works correctly for stream request types.
 g.test_box_iproto_override_stream_rq_types = function(cg)
     cg.server:exec(function()
+        local trigger = require('trigger')
         local header = setmetatable(
                     {
                         [box.iproto.key.SYNC] = 1,
@@ -237,14 +286,16 @@ g.test_box_iproto_override_stream_rq_types = function(cg)
                         [box.iproto.key.STMT_ID] = 4,
                         [box.iproto.key.SQL_TEXT] = 'text'
                     }, {__serialize = 'map'})
-        local rq_types = {
-            box.iproto.type.BEGIN,
-            box.iproto.type.COMMIT,
-            box.iproto.type.ROLLBACK,
+        local rq_names = {
+            'BEGIN',
+            'COMMIT',
+            'ROLLBACK',
         }
-        for _, rq_type in ipairs(rq_types) do
-            box.iproto.override(rq_type, _G.cb)
+        for _, rq_name in ipairs(rq_names) do
+            local rq_type = box.iproto.type[rq_name]
             header[box.iproto.key.REQUEST_TYPE] = rq_type
+
+            box.iproto.override(rq_type, _G.cb)
             _G.test_cb_err(header, nil,
                            box.error.UNABLE_TO_PROCESS_OUT_OF_STREAM,
                            "Unable to process %u+ request out of stream")
@@ -252,6 +303,16 @@ g.test_box_iproto_override_stream_rq_types = function(cg)
             _G.test_cb_resp(header, body)
             header[box.iproto.key.STREAM_ID] = 0
             box.iproto.override(rq_type, nil)
+
+            local event_name = 'box.iproto.override.' .. rq_name:lower()
+            trigger.set(event_name, 'test_handler', _G.cb)
+            _G.test_cb_err(header, nil,
+                           box.error.UNABLE_TO_PROCESS_OUT_OF_STREAM,
+                           "Unable to process %u+ request out of stream")
+            header[box.iproto.key.STREAM_ID] = 1
+            _G.test_cb_resp(header, body)
+            header[box.iproto.key.STREAM_ID] = 0
+            trigger.del(event_name, 'test_handler')
         end
     end)
 end
@@ -259,7 +320,7 @@ end
 -- Checks that `box.iproto.override` works correctly with IPROTO_NOP.
 g.test_box_iproto_override_nop_rq_type = function(cg)
     cg.server:exec(function()
-        box.iproto.override(box.iproto.type.NOP, _G.cb)
+        local trigger = require('trigger')
         local header = setmetatable(
                     {
                         [box.iproto.key.REQUEST_TYPE] = box.iproto.type.NOP,
@@ -273,13 +334,20 @@ g.test_box_iproto_override_nop_rq_type = function(cg)
                         [box.iproto.key.STMT_ID] = 4,
                         [box.iproto.key.SQL_TEXT] = 'text'
                     }, {__serialize = 'map'})
+
+        box.iproto.override(box.iproto.type.NOP, _G.cb)
         _G.test_cb_err(header, body, box.error.INVALID_MSGPACK,
                        "Invalid MsgPack %- packet body")
         box.iproto.override(box.iproto.type.NOP, nil)
+
+        trigger.set('box.iproto.override.nop', 'test_handler', _G.cb)
+        _G.test_cb_err(header, body, box.error.INVALID_MSGPACK,
+                       "Invalid MsgPack %- packet body")
+        trigger.del('box.iproto.override.nop', 'test_handler')
     end)
 end
 
--- Checks that `box.iproto.override` works correctly with arbitrary request type
+-- Checks that `box.iproto.override` works correctly with arbitrary request
 -- type.
 g.test_box_iproto_override_arbitrary_rq_type = function(cg)
     cg.server:exec(function()

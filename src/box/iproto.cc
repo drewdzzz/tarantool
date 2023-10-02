@@ -41,6 +41,7 @@
 
 #include "version.h"
 #include "event.h"
+#include "func_adapter.h"
 #include "fiber.h"
 #include "fiber_cond.h"
 #include "cbus.h"
@@ -2525,13 +2526,15 @@ tx_process_override(struct cmsg *m)
 {
 	struct iproto_msg *msg = tx_accept_msg(m);
 	mh_int_t k = mh_i32ptr_find(tx_req_handlers, msg->header.type, NULL);
-	if (k == mh_end(tx_req_handlers)) {
+	if (k == mh_end(tx_req_handlers))
 		k = mh_i32ptr_find(tx_req_handlers, IPROTO_UNKNOWN, NULL);
-		assert(k != mh_end(tx_req_handlers));
+		
+	struct iproto_req_handler *handler = NULL;
+	if (k != mh_end(tx_req_handlers)) {
+		struct mh_i32ptr_node_t *node =
+			mh_i32ptr_node(tx_req_handlers, k);
+		handler = (struct iproto_req_handler *)node->val;
 	}
-	struct mh_i32ptr_node_t *node = mh_i32ptr_node(tx_req_handlers, k);
-	struct iproto_req_handler *handler =
-		(struct iproto_req_handler *)node->val;
 	const char *header = msg->reqstart;
 	mp_decode_uint(&header);
 
@@ -2546,7 +2549,52 @@ tx_process_override(struct cmsg *m)
 	}
 
 	struct cmsg_hop *route = NULL;
-	switch (handler->cb(header, header_end, body, body_end, handler->ctx)) {
+	enum iproto_handler_status handler_rc = IPROTO_HANDLER_FALLBACK;
+	const char *type_str = iproto_type_name(msg->header.type);
+	const char *event_name = "box.iproto.override.unknown";
+	if (type_str != NULL) {
+		char *lower_type_str = strtolowerdup(type_str);
+		event_name =
+			tt_sprintf("box.iproto.override.%s", lower_type_str);
+		free(lower_type_str);
+	}
+	struct event *event = event_get(event_name, false);
+	if (event != NULL) {
+		const char *name = NULL;
+		struct func_adapter *trigger = NULL;
+		struct func_adapter_ctx ctx;
+		struct event_trigger_iterator it;
+		event_trigger_iterator_create(&it, event);
+		while (handler_rc == IPROTO_HANDLER_FALLBACK &&
+		       event_trigger_iterator_next(&it, &trigger, &name)) {
+			func_adapter_begin(trigger, &ctx);
+			func_adapter_push_msgpack(trigger, &ctx, header, header_end);
+			func_adapter_push_msgpack(trigger, &ctx, body, body_end);
+			int rc = func_adapter_call(trigger, &ctx);
+			if (rc == 0) {
+				if (func_adapter_is_bool(trigger, &ctx)) {
+					bool ret = false;
+					func_adapter_pop_bool(trigger, &ctx, &ret);
+					if (ret)
+						handler_rc = IPROTO_HANDLER_OK;
+				} else {
+					diag_set(ClientError, ER_PROC_LUA,
+			 			 tt_sprintf("Invalid Lua IPROTO handler return type - "
+				    		 "expected boolean"));
+					handler_rc = IPROTO_HANDLER_ERROR;
+				}
+			} else {
+				handler_rc = IPROTO_HANDLER_ERROR;
+			}
+			func_adapter_end(trigger, &ctx);
+		}
+		event_trigger_iterator_destroy(&it);
+	}
+	if (handler != NULL && handler_rc == IPROTO_HANDLER_FALLBACK) {
+		handler_rc = handler->cb(header, header_end, body, body_end,
+					 handler->ctx);
+	}
+	switch (handler_rc) {
 	case IPROTO_HANDLER_OK: {
 		struct obuf *out = msg->connection->tx.p_obuf;
 		iproto_wpos_create(&msg->wpos, out);
@@ -3084,6 +3132,20 @@ iproto_thread_init(struct iproto_thread *iproto_thread)
 {
 	iproto_thread_init_routes(iproto_thread);
 	iproto_thread->req_handlers = mh_i32_new();
+	for (uint32_t type = 0; type < iproto_type_MAX; type++) {
+		const char *type_str = iproto_type_name(type);
+		if (type_str == NULL)
+			continue;
+		char *type_str_lowercase = strtolowerdup(type_str);
+		const char *event_name = tt_sprintf("box.iproto.override.%s",
+						    type_str_lowercase);
+		free(type_str_lowercase);
+		struct event *event = event_get(event_name, false);
+		if (event == NULL || !event_has_triggers(event))
+			continue;
+		mh_i32_put(iproto_thread->req_handlers, &type,
+			   NULL, NULL);
+	}
 	slab_cache_create(&iproto_thread->net_slabc, &runtime);
 	/* Init statistics counter */
 	iproto_thread->rmean = rmean_new(rmean_net_strings, RMEAN_NET_LAST);
@@ -3092,6 +3154,52 @@ iproto_thread_init(struct iproto_thread *iproto_thread)
 	iproto_thread->tx.requests_in_progress = 0;
 	iproto_thread->requests_in_stream_queue = 0;
 }
+
+/**
+ * Notifies IPROTO threads that a new request handler has been set.
+ */
+static void
+iproto_cfg_override(uint32_t req_type, bool is_set);
+
+static int
+trigger_on_change_iproto_notify(struct trigger *trigger, void *arg)
+{
+	(void)trigger;
+	struct event *event = (struct event *)arg;
+	const char *prefix = "box.iproto.override.";
+	const size_t prefix_len = strlen(prefix);
+	if (strncmp(event->name, prefix, prefix_len) != 0)
+		return 0;
+	const char *req_name = event->name + prefix_len;	
+	enum iproto_type req_type = iproto_type_MAX;
+	for (int i = 0; i < iproto_type_MAX; i++) {
+		const char *type_str = iproto_type_strs[i];
+		if (type_str == NULL)
+			continue;
+		char *lower_type_str = strtolowerdup(type_str);
+		if (strcmp(lower_type_str, req_name) == 0) {
+			req_type = (enum iproto_type)i;
+			break;
+		}
+		free(lower_type_str);
+	}
+	if (req_type == iproto_type_MAX) {
+		say_error("The event %s is in iproto override namespace but "
+			  "%s is not a request type", event->name, req_name);
+		return 0;
+	}
+	if (req_type == IPROTO_JOIN || req_type == IPROTO_FETCH_SNAPSHOT ||
+	    req_type == IPROTO_REGISTER || req_type == IPROTO_SUBSCRIBE) {
+		say_error("IPROTO request handler overriding does not support "
+			  "%s request type", req_name);
+		return 0;
+	}
+	bool is_set = event_has_triggers(event);
+	iproto_cfg_override(req_type, is_set);
+	return 0;
+}
+
+TRIGGER(trigger_on_change, trigger_on_change_iproto_notify);
 
 /** Initialize the iproto subsystem and start network io thread */
 void
@@ -3134,6 +3242,7 @@ iproto_init(int threads_count)
 
 	if (box_on_shutdown(NULL, iproto_on_shutdown_f, NULL) != 0)
 		panic("failed to set iproto shutdown trigger");
+	event_on_change(&trigger_on_change);
 }
 
 /** Available iproto configuration changes. */
@@ -3483,9 +3592,6 @@ iproto_session_new(struct iostream *io, struct user *user)
 	return session->id;
 }
 
-/**
- * Notifies IPROTO threads that a new request handler has been set.
- */
 static void
 iproto_cfg_override(uint32_t req_type, bool is_set)
 {
