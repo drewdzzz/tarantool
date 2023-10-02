@@ -16,6 +16,7 @@ extern "C" {
 #endif /* defined(__cplusplus) */
 
 struct func_adapter;
+struct trigger;
 
 /**
  * List of triggers registered on event identified by name.
@@ -144,6 +145,9 @@ event_foreach_f(struct event *event, void *arg);
  */
 bool
 event_foreach(event_foreach_f cb, void *arg);
+
+void
+event_on_change(struct trigger *trigger);
 
 /**
  * Initializes event submodule.
