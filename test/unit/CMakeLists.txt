@@ -635,3 +635,8 @@ create_unit_test(PREFIX event
                  SOURCES event.c core_test_utils.c
                  LIBRARIES core unit
 )
+
+create_unit_test(PREFIX func_adapter_c
+                 SOURCES func_adapter_c.c box_test_utils.c
+                 LIBRARIES unit box core
+)

@@ -18,7 +18,7 @@ extern "C" {
 
 struct tuple;
 
-#define FUNC_ADAPTER_CTX_SIZE 24
+#define FUNC_ADAPTER_CTX_SIZE 128
 
 /**
  * Abstract func_adapter_ctx instance. It is supposed to be converted
