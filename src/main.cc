@@ -77,6 +77,7 @@
 #include <libutil.h>
 #include "box/lua/init.h" /* box_lua_init() */
 #include "box/lua/console.h"
+#include "box/port.h"
 #include "box/session.h"
 #include "box/memtx_tx.h"
 #include "box/module_cache.h"
@@ -603,6 +604,7 @@ tarantool_free(void)
 	coll_free();
 	systemd_free();
 	say_logger_free();
+	port_free();
 	fiber_free();
 	memory_free();
 	random_free();
@@ -1003,6 +1005,7 @@ main(int argc, char **argv)
 	main_argv = argv;
 
 	fiber_init(fiber_cxx_invoke);
+	port_init();
 	popen_init();
 	coio_init();
 	coio_enable();

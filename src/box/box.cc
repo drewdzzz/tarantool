@@ -5850,7 +5850,6 @@ box_storage_init(void)
 	engine_init();
 	schema_init();
 	replication_init(cfg_geti_default("replication_threads", 1));
-	port_init();
 	iproto_init(cfg_geti("iproto_threads"));
 	sql_init();
 	audit_log_init();
@@ -5881,7 +5880,6 @@ box_storage_free(void)
 	flightrec_free();
 	audit_log_free();
 	sql_built_in_functions_cache_free();
-	port_free();
 	/* fiber_pool_destroy(&tx_fiber_pool); */
 	is_storage_initialized = false;
 }

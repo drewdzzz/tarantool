@@ -6,6 +6,7 @@
 #include "lua/error.h"
 #include "lua/utils.h"
 #include "lua/msgpack.h"
+#include "box/port.h"
 #include "box/tuple.h"
 #include "box/lua/func_adapter.h"
 #include "box/lua/tuple.h"
@@ -537,6 +538,7 @@ main(void)
 	memory_init();
 	fiber_init(fiber_c_invoke);
 	tuple_init(NULL);
+	port_init();
 
 	lua_State *L = luaT_newteststate();
 	tarantool_L = L;
@@ -573,6 +575,7 @@ main(void)
 
 	lua_close(L);
 	tarantool_L = NULL;
+	port_free();
 	tuple_free();
 	fiber_free();
 	memory_free();
