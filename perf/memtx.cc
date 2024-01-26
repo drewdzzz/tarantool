@@ -92,7 +92,7 @@ private:
 		::memory_init();
 		::fiber_init(fiber_c_invoke);
 		::memtx_tx_manager_init();
-		::event_init();
+		::event_init(NULL);
 
 		::txn_event_trigger_init();
 		::space_cache_init();

@@ -461,6 +461,42 @@ session_on_shutdown_f(void *arg)
 	return 0;
 }
 
+struct rlist on_access_denied = RLIST_HEAD_INITIALIZER(on_access_denied);
+struct event *on_access_denied_event;
+
+/**
+ * Runs on access denied triggers (both internal and user-defined ones).
+ */
+int
+on_access_denied_run_triggers(const char *access_type, const char *object_type,
+			      const char *object_name)
+{
+	assert(on_access_denied_event != NULL);
+
+	struct rlist *triggers = &on_access_denied;
+	struct on_access_denied_ctx trigger_ctx =
+		{access_type, object_type, object_name};
+	if (trigger_run(triggers, &trigger_ctx) != 0)
+		return -1;
+
+	const char *name = NULL;
+	struct func_adapter *trigger = NULL;
+	struct func_adapter_ctx ctx;
+	struct event_trigger_iterator it;
+	int rc = 0;
+	event_trigger_iterator_create(&it, on_access_denied_event);
+	while (rc == 0 && event_trigger_iterator_next(&it, &trigger, &name)) {
+		func_adapter_begin(trigger, &ctx);
+		func_adapter_push_str0(trigger, &ctx, access_type);
+		func_adapter_push_str0(trigger, &ctx, object_type);
+		func_adapter_push_str0(trigger, &ctx, object_name);
+		rc = func_adapter_call(trigger, &ctx);
+		func_adapter_end(trigger, &ctx);
+	}
+	event_trigger_iterator_destroy(&it);
+	return rc;
+}
+
 void
 session_init(void)
 {
@@ -483,11 +519,13 @@ session_init(void)
 	fiber_cond_create(&shutdown_list_empty_cond);
 	if (box_on_shutdown(NULL, session_on_shutdown_f, NULL) != 0)
 		panic("failed to set session shutdown trigger");
+	box_error_set_on_access_denied_cb(on_access_denied_run_triggers);
 }
 
 void
 session_free(void)
 {
+	box_error_set_on_access_denied_cb(NULL);
 	event_unref(session_on_connect_event);
 	session_on_connect_event = NULL;
 	event_unref(session_on_disconnect_event);

@@ -304,7 +304,7 @@ main(void)
 	memory_init();
 	fiber_init(fiber_c_invoke);
 	coll_init();
-	event_init();
+	event_init(NULL);
 	box_init();
 	sql_init();
 

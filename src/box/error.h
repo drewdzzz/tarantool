@@ -185,16 +185,6 @@ extern const struct type_info type_AccessDeniedError;
 extern const struct type_info type_CustomError;
 
 /**
- * Internal triggers fired after access denied error is created.
- */
-extern struct rlist on_access_denied;
-
-/**
- * User-definded triggers fired after access denied error is created.
- */
-extern struct event *on_access_denied_event;
-
-/**
  * Context passed to on_access_denied trigger.
  */
 struct on_access_denied_ctx {
@@ -205,6 +195,13 @@ struct on_access_denied_ctx {
 	/** Name of object the required access was denied to */
 	const char *object_name;
 };
+
+typedef int
+(*on_access_denied_f)(const char *access_type, const char *object_type,
+		      const char *object_name);
+
+void
+box_error_set_on_access_denied_cb(on_access_denied_f cb);
 
 #if defined(__cplusplus)
 } /* extern "C" */

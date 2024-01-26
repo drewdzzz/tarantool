@@ -178,11 +178,14 @@ event_foreach_f(struct event *event, void *arg);
 bool
 event_foreach(event_foreach_f cb, void *arg);
 
+typedef void
+(*event_on_change_f)(struct event *, struct event *);
+
 /**
  * Initializes event submodule.
  */
 void
-event_init(void);
+event_init(event_on_change_f event_on_change_cb);
 
 /**
  * Frees event submodule.

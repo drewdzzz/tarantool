@@ -92,6 +92,7 @@
 #include "lua/utils.h"
 #include "core/event.h"
 #include "on_shutdown.h"
+#include "func_adapter.h"
 
 static pid_t master_pid = getpid();
 static struct pidfh *pid_file_handle;
@@ -739,6 +740,27 @@ print_help(FILE *stream)
 	fprintf(stream, help_msg, tarantool_version());
 }
 
+void
+event_on_change_cb(struct event *on_change_event, struct event *event)
+{
+	if (!event_has_triggers(on_change_event))
+		return;
+	struct event_trigger_iterator it;
+	event_trigger_iterator_create(&it, on_change_event);
+	struct func_adapter *func = NULL;
+	const char *name = NULL;
+	struct func_adapter_ctx ctx;
+	while (event_trigger_iterator_next(&it, &func, &name)) {
+		func_adapter_begin(func, &ctx);
+		func_adapter_push_str0(func, &ctx, event->name);
+		int rc = func_adapter_call(func, &ctx);
+		func_adapter_end(func, &ctx);
+		if (rc != 0)
+			diag_log();
+	}
+	event_trigger_iterator_destroy(&it);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1015,7 +1037,7 @@ main(int argc, char **argv)
 	memtx_tx_manager_init();
 	module_init();
 	ssl_init();
-	event_init();
+	event_init(event_on_change_cb);
 	systemd_init();
 
 	const int override_cert_paths_env_vars = 0;

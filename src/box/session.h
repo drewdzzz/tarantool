@@ -70,6 +70,16 @@ enum output_format {
 extern const char *session_type_strs[];
 
 /**
+ * Internal triggers fired after access denied error is created.
+ */
+extern struct rlist on_access_denied;
+
+/**
+ * User-definded triggers fired after access denied error is created.
+ */
+extern struct event *on_access_denied_event;
+
+/**
  * Session meta is used in different ways by sessions of different
  * types, and allows to do not store attributes in struct session,
  * that are used only by a session of particular type.

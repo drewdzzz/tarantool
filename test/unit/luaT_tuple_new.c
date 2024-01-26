@@ -188,7 +188,7 @@ main()
 
 	struct lua_State *L = luaT_newteststate();
 
-	event_init();
+	event_init(NULL);
 	box_init();
 	tarantool_lua_error_init(L);
 	luaopen_msgpack(L);

@@ -182,28 +182,20 @@ event_find_trigger(struct event *event, const char *name)
 }
 
 /**
+ * Callback that is fired on event registry modification.
+ * Is used to fire tirggers defined in box.
+ */
+static event_on_change_f on_change_cb;
+
+/**
  * Fires on_change triggers. Must be called after the change is applied.
  * Each returned value is ignored, all thrown errors are logged.
  */
-static void
+void
 event_on_change(struct event *event)
 {
-	if (!event_has_triggers(on_change_event))
-		return;
-	struct event_trigger_iterator it;
-	event_trigger_iterator_create(&it, on_change_event);
-	struct func_adapter *func = NULL;
-	const char *name = NULL;
-	struct func_adapter_ctx ctx;
-	while (event_trigger_iterator_next(&it, &func, &name)) {
-		func_adapter_begin(func, &ctx);
-		func_adapter_push_str0(func, &ctx, event->name);
-		int rc = func_adapter_call(func, &ctx);
-		func_adapter_end(func, &ctx);
-		if (rc != 0)
-			diag_log();
-	}
-	event_trigger_iterator_destroy(&it);
+	if (on_change_cb != NULL)
+		on_change_cb(on_change_event, event);
 }
 
 /** Detach the trigger from the event. */
@@ -373,11 +365,12 @@ event_foreach(event_foreach_f cb, void *arg)
 }
 
 void
-event_init(void)
+event_init(event_on_change_f event_on_change_cb)
 {
 	event_registry = mh_strnptr_new();
 	on_change_event = event_get("tarantool.trigger.on_change", true);
 	event_ref(on_change_event);
+	on_change_cb = event_on_change_cb;
 }
 
 void

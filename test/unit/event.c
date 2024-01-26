@@ -512,7 +512,7 @@ test_event_free(void)
 	is(func_destroy_count, lengthof(event_names) * lengthof(trigger_names),
 	   "All triggers must be destroyed");
 	/* Initialize event back. */
-	event_init();
+	event_init(NULL);
 
 	check_plan();
 }
@@ -551,7 +551,7 @@ test_event_ref_all_triggers(void)
 	is(func_destroy_count, lengthof(trg_names),
 	   "All triggers must be destroyed");
 	/* Initialize event back. */
-	event_init();
+	event_init(NULL);
 
 	check_plan();
 }
@@ -573,7 +573,7 @@ test_main(void)
 int
 main(void)
 {
-	event_init();
+	event_init(NULL);
 	int rc = test_main();
 	event_free();
 	return rc;

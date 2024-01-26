@@ -267,40 +267,16 @@ BuildXlogGapError(const char *file, unsigned line,
 	}
 }
 
-struct rlist on_access_denied = RLIST_HEAD_INITIALIZER(on_access_denied);
-struct event *on_access_denied_event;
-
 /**
- * Runs on access denied triggers. Does not run triggers from the event if it
- * is not initialized.
+ * Callback that is fired on access denied error.
+ * Is used to run triggers defined in box module.
  */
-static int
-run_on_access_denied_triggers(const char *access_type, const char *object_type,
-			      const char *object_name)
-{
-	struct on_access_denied_ctx trigger_ctx =
-		{access_type, object_type, object_name};
-	if (trigger_run(&on_access_denied, &trigger_ctx) != 0)
-		return -1;
+static on_access_denied_f on_access_denied_cb;
 
-	if (on_access_denied_event == NULL)
-		return 0;
-	const char *name = NULL;
-	struct func_adapter *trigger = NULL;
-	struct func_adapter_ctx ctx;
-	struct event_trigger_iterator it;
-	int rc = 0;
-	event_trigger_iterator_create(&it, on_access_denied_event);
-	while (rc == 0 && event_trigger_iterator_next(&it, &trigger, &name)) {
-		func_adapter_begin(trigger, &ctx);
-		func_adapter_push_str0(trigger, &ctx, access_type);
-		func_adapter_push_str0(trigger, &ctx, object_type);
-		func_adapter_push_str0(trigger, &ctx, object_name);
-		rc = func_adapter_call(trigger, &ctx);
-		func_adapter_end(trigger, &ctx);
-	}
-	event_trigger_iterator_destroy(&it);
-	return rc;
+void
+box_error_set_on_access_denied_cb(on_access_denied_f cb)
+{
+	on_access_denied_cb = cb;
 }
 
 const struct type_info type_AccessDeniedError =
@@ -321,9 +297,8 @@ AccessDeniedError::AccessDeniedError(const char *file, unsigned int line,
 	 * Don't run the triggers when create after marshaling
 	 * through network.
 	 */
-	if (run_triggers)
-		run_on_access_denied_triggers(access_type, object_type,
-					      object_name);
+	if (run_triggers && on_access_denied_cb != NULL)
+		on_access_denied_cb(access_type, object_type, object_name);
 	error_set_str(this, "object_type", object_type);
 	error_set_str(this, "object_name", object_name);
 	error_set_str(this, "access_type", access_type);
