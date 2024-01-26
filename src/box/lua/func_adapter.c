@@ -24,6 +24,8 @@ struct func_adapter_lua {
 	 * Reference to the function in Lua registry.
 	 */
 	int func_ref;
+	struct lua_State *L;
+	int coro_ref;
 };
 
 /**
@@ -69,7 +71,15 @@ func_adapter_lua_destroy(struct func_adapter *func_base)
 {
 	struct func_adapter_lua *func = (struct func_adapter_lua *)func_base;
 	luaL_unref(tarantool_L, LUA_REGISTRYINDEX, func->func_ref);
+	luaL_unref(tarantool_L, LUA_REGISTRYINDEX, func->coro_ref);
 	free(func);
+}
+
+bool
+func_adapter_is_lua(struct func_adapter *func)
+{
+	assert(func != NULL);
+	return func->vtab->destroy == func_adapter_lua_destroy;
 }
 
 void
@@ -94,5 +104,9 @@ func_adapter_lua_create(lua_State *L, int idx)
 	lua_pushvalue(L, idx);
 	func->func_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 	func->vtab = &vtab;
+	func->L = luaT_newthread(tarantool_L);
+	if (func->L == NULL)
+		panic("Cannot create Lua thread for func_adapter_lua");
+	func->coro_ref = luaL_ref(tarantool_L, LUA_REGISTRYINDEX);
 	return (struct func_adapter *)func;
 }

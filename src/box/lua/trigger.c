@@ -11,6 +11,50 @@
 #include "lua/utils.h"
 #include "tt_static.h"
 
+#include "box/port.h"
+
+#include "box/func_adapter.h"
+
+static struct lua_State *args_L;
+
+static int
+luaT_trigger_non_lua_handler(struct lua_State *L)
+{
+	struct func_adapter *func =
+		(struct func_adapter *)lua_touserdata(L, lua_upvalueindex(1));
+	struct port args, ret;
+	lua_settop(args_L, 0);
+	lua_xmove(L, args_L, lua_gettop(L));
+	port_lua_create(&args, args_L);
+	int rc = func_adapter_call(func, &args, &ret);
+	if (rc != 0)
+		return luaT_error(L);
+	
+	port_dump_lua(&ret, L, PORT_DUMP_LUA_MODE_FLAT);
+	port_destroy(&ret);
+	return lua_gettop(L);
+}
+
+static void
+luaT_trigger_push_handler(struct lua_State *L, struct func_adapter *trigger)
+{
+	if (func_adapter_is_lua(trigger)) {
+		func_adapter_lua_get_func(trigger, L);
+	} else {
+		lua_pushlightuserdata(L, trigger);
+		lua_pushcclosure(L, luaT_trigger_non_lua_handler, 1);
+	}
+}
+
+static void
+luaT_trigger_push_handler_info(struct lua_State *L, struct func_adapter *trigger)
+{
+	if (func_adapter_is_lua(trigger))
+		func_adapter_lua_get_func(trigger, L);
+	else
+		lua_pushstring(L, "non-Lua handler");
+}
+
 /**
  * Sets a trigger with passed name to the passed event.
  * The first argument is event name, the second one is trigger name, the third
@@ -57,7 +101,7 @@ luaT_trigger_del(struct lua_State *L)
 	struct func_adapter *old = event_find_trigger(event, trigger_name);
 	if (old == NULL)
 		return 0;
-	func_adapter_lua_get_func(old, L);
+	luaT_trigger_push_handler_info(L, old);
 	event_reset_trigger(event, trigger_name, NULL);
 	return 1;
 }
@@ -79,20 +123,25 @@ luaT_trigger_call(struct lua_State *L)
 	struct event *event = event_get(event_name, false);
 	if (event == NULL)
 		return 0;
-	int top = lua_gettop(L);
-	int narg = top - 1;
 	struct event_trigger_iterator it;
 	event_trigger_iterator_create(&it, event);
 	struct func_adapter *trigger = NULL;
 	const char *name = NULL;
+	int top = lua_gettop(L);
+	struct port args;
+	port_lua_create(&args, args_L);
 	int rc = 0;
 	while (rc == 0 && event_trigger_iterator_next(&it, &trigger, &name)) {
-		func_adapter_lua_get_func(trigger, L);
-		for (int i = top - narg + 1; i <= top; ++i)
+		for (int i = 2; i <= top; i++)
 			lua_pushvalue(L, i);
-		rc = luaT_call(L, narg, 0);
+		lua_xmove(L, args_L, top - 1);
+		struct port out;
+		rc = func_adapter_call(trigger, &args, &out);
+		if (rc == 0)
+			port_destroy(&out);
 	}
 	event_trigger_iterator_destroy(&it);
+	port_destroy(&args);
 	if (rc != 0)
 		return luaT_error(L);
 	return 0;
@@ -117,7 +166,7 @@ trigger_info_push_event(struct event *event, void *arg)
 		lua_createtable(L, 2, 0);
 		lua_pushstring(L, name);
 		lua_rawseti(L, -2, 1);
-		func_adapter_lua_get_func(trigger, L);
+		luaT_trigger_push_handler_info(L, trigger);
 		lua_rawseti(L, -2, 2);
 		lua_rawseti(L, -2, idx);
 	}
@@ -181,7 +230,7 @@ luaT_trigger_iterator_next(struct lua_State *L)
 	const char *name = NULL;
 	if (event_trigger_iterator_next(it, &trigger, &name)) {
 		lua_pushstring(L, name);
-		func_adapter_lua_get_func(trigger, L);
+		luaT_trigger_push_handler(L, trigger);
 		return 2;
 	}
 	return 0;
@@ -253,6 +302,10 @@ box_lua_trigger_init(struct lua_State *L)
 	};
 	luaL_register_type(L, event_trigger_iterator_typename,
 			   trigger_iterator_methods);
+	args_L = luaT_newthread(L);
+	if (args_L == NULL)
+		panic("Cannot init module trigger");
+	luaL_ref(L, LUA_REGISTRYINDEX);
 }
 
 /** Old API compatibility. */
@@ -353,7 +406,7 @@ luaT_event_reset_trigger_with_flags(struct lua_State *L, int bottom,
 		int idx = 0;
 		while (event_trigger_iterator_next(&it, &trigger, &name)) {
 			idx++;
-			func_adapter_lua_get_func(trigger, L);
+			luaT_trigger_push_handler_info(L, trigger);
 			lua_rawseti(L, -2, idx);
 		}
 		event_trigger_iterator_destroy(&it);
