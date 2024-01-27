@@ -56,6 +56,7 @@
 #include "coll_id_cache.h"
 #include "func_adapter.h"
 #include "lua/utils.h"
+#include "port.h"
 
 int
 access_check_space(struct space *space, user_access_t access)
@@ -856,11 +857,11 @@ space_run_replace_triggers(struct event *event, struct txn *txn,
 	event_trigger_iterator_create(&it, event);
 	struct func_adapter *trigger = NULL;
 	const char *name = NULL;
-	struct func_adapter_ctx ctx;
 	int rc = 0;
+	struct port args;
 	while (rc == 0 && event_trigger_iterator_next(&it, &trigger, &name)) {
-		func_adapter_begin(trigger, &ctx);
-
+		bool has_args = false;
+		bool has_ret = false;
 		/*
 		 * The transaction could be aborted while the previous trigger
 		 * was running (e.g. if the trigger callback yielded).
@@ -872,33 +873,35 @@ space_run_replace_triggers(struct event *event, struct txn *txn,
 		assert(stmt != NULL);
 
 		/* Push arguments to a trigger. */
+		has_args = true;
+		port_light_create(&args);
 		if (stmt->old_tuple != NULL)
-			func_adapter_push_tuple(trigger, &ctx, stmt->old_tuple);
+			port_light_add_tuple(&args, stmt->old_tuple);
 		else
-			func_adapter_push_null(trigger, &ctx);
+			port_light_add_null(&args);
 		if (stmt->new_tuple != NULL)
-			func_adapter_push_tuple(trigger, &ctx, stmt->new_tuple);
+			port_light_add_tuple(&args, stmt->new_tuple);
 		else
-			func_adapter_push_null(trigger, &ctx);
+			port_light_add_null(&args);
 		/* TODO: maybe the space object has to be here */
-		func_adapter_push_str0(trigger, &ctx, space_name(stmt->space));
+		port_light_add_str0(&args, space_name(stmt->space));
 		/* Operation type: INSERT/UPDATE/UPSERT/REPLACE/DELETE */
-		func_adapter_push_str0(trigger, &ctx,
-				       iproto_type_name(stmt->type));
+		port_light_add_str0(&args, iproto_type_name(stmt->type));
 		/* Pass xrow header and body to recovery triggers. */
 		if (stmt->space->run_recovery_triggers) {
 			struct xrow_header *row = stmt->row;
 			assert(row != NULL && row->header != NULL);
-			func_adapter_push_msgpack(trigger, &ctx, row->header,
-						  row->header_end);
+			port_light_add_mp(&args, row->header, row->header_end);
 			assert(row->bodycnt == 1);
 			const char *body = row->body[0].iov_base;
 			const char *body_end = body + row->body[0].iov_len;
-			func_adapter_push_msgpack(trigger, &ctx, body,
-						  body_end);
+			port_light_add_mp(&args, body, body_end);
 		}
 
-		rc = func_adapter_call(trigger, &ctx);
+		struct port ret;
+		struct port *ret_ptr = update_tuple ? &ret : NULL;
+		rc = func_adapter_call(trigger, &args, ret_ptr);
+		has_ret = update_tuple && rc == 0;
 		if (rc != 0 || !update_tuple)
 			goto out;
 
@@ -917,12 +920,13 @@ space_run_replace_triggers(struct event *event, struct txn *txn,
 		 * See the function description for details.
 		 */
 		struct tuple *result = NULL;
-		if (func_adapter_is_tuple(trigger, &ctx)) {
-			func_adapter_pop_tuple(trigger, &ctx, &result);
-		} else if (func_adapter_is_empty(trigger, &ctx)) {
+		port_enlight(&ret);
+		if (port_light_is_tuple(&ret, 0)) {
+			port_light_get_tuple(&ret, 0, &result);
+		} else if (port_light_is_none(&ret, 0)) {
 			rc = 0;
 			goto out;
-		} else if (!func_adapter_is_null(trigger, &ctx)) {
+		} else if (!port_light_is_null(&ret, 0)) {
 			diag_set(ClientError, ER_BEFORE_REPLACE_RET);
 			rc = -1;
 			goto out;
@@ -951,7 +955,10 @@ space_run_replace_triggers(struct event *event, struct txn *txn,
 		stmt->new_tuple = result;
 
 out:
-		func_adapter_end(trigger, &ctx);
+		if (has_args)
+			port_destroy(&args);
+		if (has_ret)
+			port_destroy(&ret);
 	}
 	event_trigger_iterator_destroy(&it);
 	return rc;

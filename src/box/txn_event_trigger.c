@@ -3,6 +3,7 @@
  *
  * Copyright 2010-2023, Tarantool AUTHORS, please see AUTHORS file.
  */
+#include "box/port.h"
 #include "core/assoc.h"
 #include "func_adapter.h"
 #include "txn.h"
@@ -97,8 +98,7 @@ struct txn_iterator_state {
  * The iterator goes through every statement of the transaction.
  */
 static int
-txn_iterator_next(struct func_adapter *func, struct func_adapter_ctx *ctx,
-		  void *state)
+txn_iterator_next(void *state, struct port *out)
 {
 	struct txn_iterator_state *txn_state =
 		(struct txn_iterator_state *)state;
@@ -112,6 +112,7 @@ txn_iterator_next(struct func_adapter *func, struct func_adapter_ctx *ctx,
 		}
 	}
 
+	port_light_create(out);
 	if (stmt == NULL)
 		return 0;
 	/*
@@ -121,16 +122,16 @@ txn_iterator_next(struct func_adapter *func, struct func_adapter_ctx *ctx,
 	 *  3. The new value of the tuple;
 	 *  4. The ID of the space.
 	 */
-	func_adapter_push_double(func, ctx, txn_state->req_num++);
+	port_light_add_double(out, txn_state->req_num++);
 	if (stmt->old_tuple != NULL)
-		func_adapter_push_tuple(func, ctx, stmt->old_tuple);
+		port_light_add_tuple(out, stmt->old_tuple);
 	else
-		func_adapter_push_null(func, ctx);
+		port_light_add_null(out);
 	if (stmt->new_tuple != NULL)
-		func_adapter_push_tuple(func, ctx, stmt->new_tuple);
+		port_light_add_tuple(out, stmt->new_tuple);
 	else
-		func_adapter_push_null(func, ctx);
-	func_adapter_push_double(func, ctx, space_id(stmt->space));
+		port_light_add_null(out);
+	port_light_add_double(out, space_id(stmt->space));
 
 	txn_state->stmt = stailq_next_entry(stmt, next);
 	return 0;
@@ -149,7 +150,7 @@ run_triggers_general(struct txn *txn, struct txn_stmt *stmt,
 	int rc = 0;
 	const char *name = NULL;
 	struct func_adapter *trigger = NULL;
-	struct func_adapter_ctx ctx;
+	struct port args;
 	struct event_trigger_iterator it;
 	event_trigger_iterator_create(&it, event);
 
@@ -172,11 +173,10 @@ run_triggers_general(struct txn *txn, struct txn_stmt *stmt,
 		state.req_num = 1;
 		state.stmt = stmt;
 		state.space_id_filter = space_id;
-		func_adapter_begin(trigger, &ctx);
-		func_adapter_push_iterator(trigger, &ctx, &state,
-					   txn_iterator_next);
-		rc = func_adapter_call(trigger, &ctx);
-		func_adapter_end(trigger, &ctx);
+		port_light_create(&args);
+		port_light_add_iterator(&args, &state, txn_iterator_next);
+		rc = func_adapter_call(trigger, &args, NULL);
+		port_destroy(&args);
 	}
 	event_trigger_iterator_destroy(&it);
 	return rc;

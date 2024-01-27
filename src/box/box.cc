@@ -252,16 +252,15 @@ box_run_on_recovery_state(enum box_recovery_state state)
 
 	const char *name = NULL;
 	struct func_adapter *trigger = NULL;
-	struct func_adapter_ctx ctx;
 	struct event_trigger_iterator it;
 	int rc = 0;
 	event_trigger_iterator_create(&it, box_on_recovery_state_event);
-	while (rc == 0 && event_trigger_iterator_next(&it, &trigger, &name)) {
-		func_adapter_begin(trigger, &ctx);
-		func_adapter_push_str0(trigger, &ctx, state_str);
-		rc = func_adapter_call(trigger, &ctx);
-		func_adapter_end(trigger, &ctx);
-	}
+	struct port args;
+	port_light_create(&args);
+	port_light_add_str0(&args, state_str);
+	while (rc == 0 && event_trigger_iterator_next(&it, &trigger, &name))
+		rc = func_adapter_call(trigger, &args, NULL);
+	port_destroy(&args);
 	event_trigger_iterator_destroy(&it);
 	return rc;
 }

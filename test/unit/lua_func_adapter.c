@@ -51,26 +51,29 @@ test_numeric(void)
 		"return a * b * c * d, a + b + c + d end");
 	const double expected[] = { 3 * 5 * 7 * 11, 3 + 5 + 7 + 11};
 	struct func_adapter *func = func_adapter_lua_create(tarantool_L, idx);
-	struct func_adapter_ctx ctx;
-	func_adapter_begin(func, &ctx);
-	func_adapter_push_double(func, &ctx, 3);
-	func_adapter_push_double(func, &ctx, 5);
-	func_adapter_push_double(func, &ctx, 7);
-	func_adapter_push_double(func, &ctx, 11);
-	int rc = func_adapter_call(func, &ctx);
+	struct port args, ret;
+	port_light_create(&args);
+	port_light_add_double(&args, 3);
+	port_light_add_double(&args, 5);
+	port_light_add_double(&args, 7);
+	port_light_add_double(&args, 11);
+	int rc = func_adapter_call(func, &args, &ret);
 	fail_if(rc != 0);
 
+	port_enlight(&ret);
 	for (size_t i = 0; i < lengthof(expected); ++i) {
-		ok(func_adapter_is_double(func, &ctx), "Expected double");
+		ok(port_light_is_double(&ret, i), "Expected double");
 		double retval = 0;
-		func_adapter_pop_double(func, &ctx, &retval);
+		port_light_get_double(&ret, i, &retval);
 		ok(number_eq(expected[i], retval),
 		   "Returned value must be as expected");
 	}
 
-	ok(func_adapter_is_empty(func, &ctx), "No values left");
-	ok(!func_adapter_is_null(func, &ctx), "NULL is not absence");
-	func_adapter_end(func, &ctx);
+	ok(port_light_is_none(&ret, lengthof(expected)), "No values left");
+	ok(!port_light_is_null(&ret, lengthof(expected)),
+	   "NULL is not absence");
+	port_destroy(&args);
+	port_destroy(&ret);
 	func_adapter_destroy(func);
 	lua_settop(tarantool_L, 0);
 
@@ -90,25 +93,28 @@ test_tuple(void)
 		"box.internal.tuple.new{b, a}, "
 		"box.internal.tuple.new{a + b, a - b} end");
 	struct func_adapter *func = func_adapter_lua_create(tarantool_L, idx);
-	struct func_adapter_ctx ctx;
-	func_adapter_begin(func, &ctx);
-	func_adapter_push_double(func, &ctx, 42);
-	func_adapter_push_double(func, &ctx, 43);
+	struct port args, ret;
+	port_light_create(&args);
+	port_light_add_double(&args, 42);
+	port_light_add_double(&args, 43);
 	static const char *tuple_data = "\x92\x06\x03";
 	struct tuple *tuple = tuple_new(tuple_format_runtime, tuple_data,
 					tuple_data + strlen(tuple_data));
 	tuple_ref(tuple);
-	func_adapter_push_tuple(func, &ctx, tuple);
-	int rc = func_adapter_call(func, &ctx);
+	port_light_add_tuple(&args, tuple);
+	int rc = func_adapter_call(func, &args, &ret);
 	fail_if(rc != 0);
+
+	port_enlight(&ret);
 	struct tuple *tuples[4];
 	for (size_t i = 0; i < lengthof(tuples); ++i) {
-		ok(func_adapter_is_tuple(func, &ctx), "Expected tuple");
-		func_adapter_pop_tuple(func, &ctx, tuples + i);
+		ok(port_light_is_tuple(&ret, i), "Expected tuple");
+		port_light_get_tuple(&ret, i, tuples + i);
 		isnt(tuples[i], NULL, "Returned tuple must not be NULL");
 	}
-	ok(func_adapter_is_empty(func, &ctx), "No values left");
-	func_adapter_end(func, &ctx);
+	ok(port_light_is_none(&ret, lengthof(tuples)), "No values left");
+	port_destroy(&args);
+	port_destroy(&ret);
 	func_adapter_destroy(func);
 	lua_settop(tarantool_L, 0);
 
@@ -131,38 +137,42 @@ test_tuple(void)
 static void
 test_string(void)
 {
-	plan(6);
+	plan(7);
 	header();
 
 	int idx = generate_function(
 		"function(s1, s2) "
 		"return s1, s1 .. s2 end");
 	struct func_adapter *func = func_adapter_lua_create(tarantool_L, idx);
-	struct func_adapter_ctx ctx;
-	func_adapter_begin(func, &ctx);
+	struct port args, ret;
+	port_light_create(&args);
 	/* Not zero-terminated string. */
 	const char s1[] = {'a', 'b', 'c'};
 	size_t s1_len = lengthof(s1);
 	const char *s2 = "42strstr";
 	size_t s2_len = strlen(s2);
-	func_adapter_push_str(func, &ctx, s1, s1_len);
-	func_adapter_push_str0(func, &ctx, s2);
-	int rc = func_adapter_call(func, &ctx);
+	port_light_add_str(&args, s1, s1_len);
+	port_light_add_str0(&args, s2);
+	int rc = func_adapter_call(func, &args, &ret);
 	fail_if(rc != 0);
-	ok(func_adapter_is_str(func, &ctx), "Expected string");
+
+	port_enlight(&ret);
+	ok(port_light_is_str(&ret, 0), "Expected string");
 	const char *retval = NULL;
-	func_adapter_pop_str(func, &ctx, &retval, NULL);
-	is(strncmp(retval, s1, s1_len), 0, "Popped string must match");
 	size_t len = 0;
-	ok(func_adapter_is_str(func, &ctx), "Expected string");
-	func_adapter_pop_str(func, &ctx, &retval, &len);
+	port_light_get_str(&ret, 0, &retval, &len);
+	is(len, s1_len, "Length of popped string must match");
+	is(strncmp(retval, s1, s1_len), 0, "Popped string must match");
+	ok(port_light_is_str(&ret, 1), "Expected string");
+	port_light_get_str(&ret, 1, &retval, &len);
 	is(len, s1_len + s2_len, "Len does not match");
 	char *buf = tt_static_buf();
 	strncpy(buf, s1, s1_len);
 	strcpy(buf + s1_len, s2);
 	is(strcmp(retval, buf), 0, "Expected %s", buf);
-	ok(func_adapter_is_empty(func, &ctx), "No values left");
-	func_adapter_end(func, &ctx);
+	ok(port_light_is_none(&ret, 2), "No values left");
+	port_destroy(&args);
+	port_destroy(&ret);
 	func_adapter_destroy(func);
 	lua_settop(tarantool_L, 0);
 
@@ -183,25 +193,28 @@ test_bool(void)
 	for (size_t i = 0; i < lengthof(arguments); ++i)
 		arguments[i] = rand() % 2 == 0;
 	struct func_adapter *func = func_adapter_lua_create(tarantool_L, idx);
-	struct func_adapter_ctx ctx;
-	func_adapter_begin(func, &ctx);
+	struct port args, ret;
+	port_light_create(&args);
 	for (size_t i = 0; i < lengthof(arguments); ++i)
-		func_adapter_push_bool(func, &ctx, arguments[i]);
-	int rc = func_adapter_call(func, &ctx);
+		port_light_add_bool(&args, arguments[i]);
+	int rc = func_adapter_call(func, &args, &ret);
 	fail_if(rc != 0);
 
+	port_enlight(&ret);
 	for (size_t i = 0; i < lengthof(arguments); ++i) {
-		ok(func_adapter_is_bool(func, &ctx), "Expected double");
+		ok(port_light_is_bool(&ret, i), "Expected double");
 		bool retval = false;
-		func_adapter_pop_bool(func, &ctx, &retval);
+		port_light_get_bool(&ret, i, &retval);
 		bool is_odd = i % 2 == 0;
 		bool equal = arguments[i] == retval;
 		is(is_odd, equal, "Only odd elements are equal");
 	}
 
-	ok(!func_adapter_is_bool(func, &ctx), "No values left - no bool");
-	ok(func_adapter_is_empty(func, &ctx), "No values left");
-	func_adapter_end(func, &ctx);
+	ok(!port_light_is_bool(&ret, lengthof(arguments)),
+	   "No values left - no bool");
+	ok(port_light_is_none(&ret, lengthof(arguments)), "No values left");
+	port_destroy(&args);
+	port_destroy(&ret);
 	func_adapter_destroy(func);
 	lua_settop(tarantool_L, 0);
 
@@ -220,21 +233,22 @@ test_null(void)
 	const size_t null_count = 4;
 	const double double_val = 42;
 	struct func_adapter *func = func_adapter_lua_create(tarantool_L, idx);
-	struct func_adapter_ctx ctx;
-	func_adapter_begin(func, &ctx);
-	func_adapter_push_null(func, &ctx);
-	func_adapter_push_double(func, &ctx, double_val);
-	int rc = func_adapter_call(func, &ctx);
+	struct port args, ret;
+	port_light_create(&args);
+	port_light_add_null(&args);
+	port_light_add_double(&args, double_val);
+	int rc = func_adapter_call(func, &args, &ret);
 	fail_if(rc != 0);
-	for (size_t i = 0; i < null_count; ++i) {
-		ok(func_adapter_is_null(func, &ctx), "Expected null");
-		func_adapter_pop_null(func, &ctx);
-	}
-	ok(func_adapter_is_double(func, &ctx), "Expected double");
+
+	port_enlight(&ret);
+	for (size_t i = 0; i < null_count; ++i)
+		ok(port_light_is_null(&ret, i), "Expected null");
+	ok(port_light_is_double(&ret, null_count), "Expected double");
 	double double_retval = 0;
-	func_adapter_pop_double(func, &ctx, &double_retval);
-	ok(func_adapter_is_empty(func, &ctx), "No values left");
-	func_adapter_end(func, &ctx);
+	port_light_get_double(&ret, null_count, &double_retval);
+	ok(port_light_is_none(&ret, null_count + 1), "No values left");
+	port_destroy(&args);
+	port_destroy(&ret);
 	func_adapter_destroy(func);
 	lua_settop(tarantool_L, 0);
 
@@ -247,7 +261,7 @@ test_null(void)
 static void
 test_msgpack(void)
 {
-	plan(6);
+	plan(7);
 	header();
 
 	#define MP_BUF_LEN 64
@@ -269,21 +283,28 @@ test_msgpack(void)
 		"end");
 
 	struct func_adapter *func = func_adapter_lua_create(tarantool_L, idx);
-	struct func_adapter_ctx ctx;
-	func_adapter_begin(func, &ctx);
-	func_adapter_push_msgpack(func, &ctx, mp_buf, mp);
-	int rc = func_adapter_call(func, &ctx);
+	struct port args, ret;
+	port_light_create(&args);
+	port_light_add_mp(&args, mp_buf, mp);
+	int rc = func_adapter_call(func, &args, &ret);
 	is(rc, 0, "Function must return successfully");
-	ok(func_adapter_is_str(func, &ctx), "A string must be returned");
+
+	port_enlight(&ret);
+	ok(port_light_is_str(&ret, 0), "A string must be returned");
 	const char *str = NULL;
-	func_adapter_pop_str(func, &ctx, &str, NULL);
-	is(strcmp(str, "value"), 0, "Returned value must be as expected");
-	ok(func_adapter_is_double(func, &ctx), "A double must be returned");
+	size_t str_len = 0;
+	port_light_get_str(&ret, 0, &str, &str_len);
+	is(str_len, strlen("value"), "Returned value must be as expected");
+	is(strncmp(str, "value", str_len), 0,
+	   "Returned value must be as expected");
+	ok(port_light_is_double(&ret, 1), "A double must be returned");
 	double val = 0.0;
-	func_adapter_pop_double(func, &ctx, &val);
+	port_light_get_double(&ret, 1, &val);
 	ok(number_eq(64, val), "Returned value must be as expected");
-	ok(func_adapter_is_empty(func, &ctx), "No values left");
-	func_adapter_end(func, &ctx);
+	ok(port_light_is_none(&ret, 2), "No values left");
+	port_destroy(&args);
+	port_destroy(&ret);
+	func_adapter_destroy(func);
 
 	footer();
 	check_plan();
@@ -304,11 +325,8 @@ test_error(void)
 		int idx = generate_function(functions[i]);
 		struct func_adapter *func = func_adapter_lua_create(tarantool_L,
 								    idx);
-		struct func_adapter_ctx ctx;
-		func_adapter_begin(func, &ctx);
-		int rc = func_adapter_call(func, &ctx);
+		int rc = func_adapter_call(func, NULL, NULL);
 		is(rc, -1, "Call must fail");
-		func_adapter_end(func, &ctx);
 		func_adapter_destroy(func);
 		lua_settop(tarantool_L, 0);
 	}
@@ -357,17 +375,20 @@ test_callable(void)
 	int idx = lua_gettop(L);
 
 	struct func_adapter *func = func_adapter_lua_create(L, idx);
-	struct func_adapter_ctx ctx;
-	func_adapter_begin(func, &ctx);
-	func_adapter_push_double(func, &ctx, argument);
-	int rc = func_adapter_call(func, &ctx);
+	struct port args, ret;
+	port_light_create(&args);
+	port_light_add_double(&args, argument);
+	int rc = func_adapter_call(func, &args, &ret);
 	ok(rc == 0, "Callable table must be called successfully");
-	ok(func_adapter_is_double(func, &ctx), "Expected double");
+
+	port_enlight(&ret);
+	ok(port_light_is_double(&ret, 0), "Expected double");
 	double retval = 0;
-	func_adapter_pop_double(func, &ctx, &retval);
+	port_light_get_double(&ret, 0, &retval);
 	ok(number_eq(retval, table_value - argument),
 	   "Returned value must be as expected");
-	func_adapter_end(func, &ctx);
+	port_destroy(&args);
+	port_destroy(&ret);
 	func_adapter_lua_get_func(func, L);
 	is(lua_equal(L, -1, idx), 1, "Actual table must be returned");
 	func_adapter_destroy(func);
@@ -395,16 +416,15 @@ struct test_iterator_state {
  * Yields 3 sequentially growing values, stops when the iterator is exhausted.
  */
 static int
-test_iterator_next(struct func_adapter *func, struct func_adapter_ctx *ctx,
-		   void *state)
+test_iterator_next(void *state, struct port *out)
 {
 	struct test_iterator_state *test_state =
 		(struct test_iterator_state *)state;
-
+	port_light_create(out);
 	for (int i = 0; i < 3; ++i) {
 		if (test_state->current > test_state->limit)
 			break;
-		func_adapter_push_double(func, ctx, test_state->current++);
+		port_light_add_double(out, test_state->current++);
 	}
 	return 0;
 }
@@ -436,21 +456,23 @@ test_iterator(void)
 		results[i] += v;
 
 	struct func_adapter *func = func_adapter_lua_create(tarantool_L, idx);
-	struct func_adapter_ctx ctx;
-	func_adapter_begin(func, &ctx);
-	func_adapter_push_iterator(func, &ctx, &state, test_iterator_next);
-	int rc = func_adapter_call(func, &ctx);
+	struct port args, rets;
+	port_light_create(&args);
+	port_light_add_iterator(&args, &state, test_iterator_next);
+	int rc = func_adapter_call(func, &args, &rets);
 	fail_if(rc != 0);
 
-	for (int i = 0; i < 3; ++i) {
-		ok(func_adapter_is_double(func, &ctx), "Expected double");
+	port_enlight(&rets);
+	for (size_t i = 0; i < 3; ++i) {
+		ok(port_light_is_double(&rets, i), "Expected double");
 		double val;
-		func_adapter_pop_double(func, &ctx, &val);
+		port_light_get_double(&rets, i, &val);
 		ok(number_eq(val, results[i]),
 		   "Function result must match expected one");
 	}
-	ok(func_adapter_is_empty(func, &ctx), "Func adapter is empty");
-	func_adapter_end(func, &ctx);
+	ok(port_light_is_none(&rets, 3), "Func adapter is empty");
+	port_destroy(&args);
+	port_destroy(&rets);
 	func_adapter_destroy(func);
 
 	footer();
@@ -466,8 +488,7 @@ static const char *iterator_next_errmsg = "My error in iterator next";
  * Iterator next that returns an error.
  */
 static int
-test_iterator_next_error(struct func_adapter *func,
-			 struct func_adapter_ctx *ctx, void *state)
+test_iterator_next_error(void *state, struct port *out)
 {
 	diag_set(ClientError, ER_PROC_C, iterator_next_errmsg);
 	return -1;
@@ -492,18 +513,17 @@ test_iterator_error(void)
 		"end");
 
 	struct func_adapter *func = func_adapter_lua_create(tarantool_L, idx);
-	struct func_adapter_ctx ctx;
-	func_adapter_begin(func, &ctx);
-	func_adapter_push_iterator(func, &ctx, &state,
-				   test_iterator_next_error);
-	int rc = func_adapter_call(func, &ctx);
+	struct port args;
+	port_light_create(&args);
+	port_light_add_iterator(&args, &state, test_iterator_next_error);
+	int rc = func_adapter_call(func, &args, NULL);
 	fail_unless(rc != 0);
 	struct error *e = diag_last_error(diag_get());
 	is(e->cause, NULL, "Thrown error has no cause");
 	is(strcmp(e->errmsg, iterator_next_errmsg), 0,
 	   "Expected errmsg: %s, got: %s", iterator_next_errmsg, e->errmsg);
 
-	func_adapter_end(func, &ctx);
+	port_destroy(&args);
 	func_adapter_destroy(func);
 
 	footer();

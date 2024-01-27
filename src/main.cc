@@ -749,16 +749,17 @@ event_on_change_cb(struct event *on_change_event, struct event *event)
 	event_trigger_iterator_create(&it, on_change_event);
 	struct func_adapter *func = NULL;
 	const char *name = NULL;
-	struct func_adapter_ctx ctx;
+	event_ref(event);
+	struct port args;
+	port_light_create(&args);
+	port_light_add_str0(&args, event->name);
 	while (event_trigger_iterator_next(&it, &func, &name)) {
-		func_adapter_begin(func, &ctx);
-		func_adapter_push_str0(func, &ctx, event->name);
-		int rc = func_adapter_call(func, &ctx);
-		func_adapter_end(func, &ctx);
-		if (rc != 0)
+		if (func_adapter_call(func, &args, NULL) != 0)
 			diag_log();
 	}
+	port_destroy(&args);
 	event_trigger_iterator_destroy(&it);
+	event_unref(event);
 }
 
 int

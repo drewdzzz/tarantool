@@ -46,6 +46,7 @@
 #include "tweaks.h"
 #include "event.h"
 #include "schema.h"
+#include "port.h"
 
 const char *session_type_strs[] = {
 	"background",
@@ -347,13 +348,10 @@ session_run_triggers(struct session *session, struct rlist *triggers,
 
 	const char *name = NULL;
 	struct func_adapter *trigger = NULL;
-	struct func_adapter_ctx ctx;
 	struct event_trigger_iterator it;
 	event_trigger_iterator_create(&it, event);
 	while (rc == 0 && event_trigger_iterator_next(&it, &trigger, &name)) {
-		func_adapter_begin(trigger, &ctx);
-		rc = func_adapter_call(trigger, &ctx);
-		func_adapter_end(trigger, &ctx);
+		rc = func_adapter_call(trigger, NULL, NULL);
 	}
 	event_trigger_iterator_destroy(&it);
 out:
@@ -386,18 +384,17 @@ session_run_on_auth_triggers(const struct on_auth_trigger_ctx *result)
 
 	const char *name = NULL;
 	struct func_adapter *trigger = NULL;
-	struct func_adapter_ctx ctx;
 	struct event_trigger_iterator it;
 	int rc = 0;
 	event_trigger_iterator_create(&it, session_on_auth_event);
-	while (rc == 0 && event_trigger_iterator_next(&it, &trigger, &name)) {
-		func_adapter_begin(trigger, &ctx);
-		func_adapter_push_str(trigger, &ctx, result->user_name,
-				      result->user_name_len);
-		func_adapter_push_bool(trigger, &ctx, result->is_authenticated);
-		rc = func_adapter_call(trigger, &ctx);
-		func_adapter_end(trigger, &ctx);
-	}
+	struct port args;
+	port_light_create(&args);
+	port_light_add_str(&args, result->user_name,
+			   result->user_name_len);
+	port_light_add_bool(&args, result->is_authenticated);
+	while (rc == 0 && event_trigger_iterator_next(&it, &trigger, &name))
+		rc = func_adapter_call(trigger, &args, NULL);
+	port_destroy(&args);
 	event_trigger_iterator_destroy(&it);
 	return rc;
 }
@@ -481,18 +478,17 @@ on_access_denied_run_triggers(const char *access_type, const char *object_type,
 
 	const char *name = NULL;
 	struct func_adapter *trigger = NULL;
-	struct func_adapter_ctx ctx;
 	struct event_trigger_iterator it;
 	int rc = 0;
 	event_trigger_iterator_create(&it, on_access_denied_event);
-	while (rc == 0 && event_trigger_iterator_next(&it, &trigger, &name)) {
-		func_adapter_begin(trigger, &ctx);
-		func_adapter_push_str0(trigger, &ctx, access_type);
-		func_adapter_push_str0(trigger, &ctx, object_type);
-		func_adapter_push_str0(trigger, &ctx, object_name);
-		rc = func_adapter_call(trigger, &ctx);
-		func_adapter_end(trigger, &ctx);
-	}
+	struct port args;
+	port_light_create(&args);
+	port_light_add_str0(&args, access_type);
+	port_light_add_str0(&args, object_type);
+	port_light_add_str0(&args, object_name);
+	while (rc == 0 && event_trigger_iterator_next(&it, &trigger, &name))
+		rc = func_adapter_call(trigger, &args, NULL);
+	port_destroy(&args);
 	event_trigger_iterator_destroy(&it);
 	return rc;
 }

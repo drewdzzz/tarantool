@@ -43,6 +43,7 @@
 #include "version.h"
 #include "event.h"
 #include "func_adapter.h"
+#include "port.h"
 
 /**
  * @module Data Dictionary
@@ -308,15 +309,11 @@ run_on_schema_init_triggers(void)
 		return;
 	const char *name = NULL;
 	struct func_adapter *trigger = NULL;
-	struct func_adapter_ctx ctx;
 	struct event_trigger_iterator it;
 	int rc = 0;
 	event_trigger_iterator_create(&it, event);
-	while (rc == 0 && event_trigger_iterator_next(&it, &trigger, &name)) {
-		func_adapter_begin(trigger, &ctx);
-		rc = func_adapter_call(trigger, &ctx);
-		func_adapter_end(trigger, &ctx);
-	}
+	while (rc == 0 && event_trigger_iterator_next(&it, &trigger, &name))
+		rc = func_adapter_call(trigger, NULL, NULL);
 	event_trigger_iterator_destroy(&it);
 }
 
