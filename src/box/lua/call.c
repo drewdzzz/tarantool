@@ -648,6 +648,54 @@ port_lua_get_msgpack(struct port *base, uint32_t *size)
 	return data;
 }
 
+extern void
+port_lua_enlight(struct port *port)
+{
+	struct port tmp = *port;
+	struct port_lua *port_lua = (struct port_lua *)&tmp;
+	port_light_create(port);
+	struct lua_State *L = port_lua->L;
+	int top = lua_gettop(L);
+	for (int i = 1; i <= top; i++) {
+		switch (lua_type(L, i)) {
+		case LUA_TNIL:
+			port_light_add_null(port);
+			break;
+		case LUA_TBOOLEAN:
+			port_light_add_bool(port, lua_toboolean(L, i));
+			break;
+		case LUA_TNUMBER:
+			port_light_add_double(port, lua_tonumber(L, i));
+			break;
+		case LUA_TSTRING: {
+			size_t len;
+			const char *data = lua_tolstring(L, i, &len);
+			port_light_add_str(port, data, len);
+			break;
+		}
+		default: {
+			struct tuple *tuple = NULL;
+			tuple = luaT_istuple(L, i);
+			if (tuple != NULL) {
+				port_light_add_tuple(port, tuple);
+				break;
+			}
+
+			size_t len;
+			const char *data = NULL;
+			data = luamp_get(L, i, &len);
+			if (data != NULL) {
+				port_light_add_mp(port, data, data + len);
+				break;
+			}
+
+			port_light_add_null(port);
+		}
+		}
+	}
+	port_destroy(&tmp);
+}
+
 static void
 port_lua_destroy(struct port *base)
 {
@@ -673,6 +721,7 @@ static const struct port_vtab port_lua_vtab = {
 	.dump_plain = port_lua_dump_plain,
 	.get_msgpack = port_lua_get_msgpack,
 	.get_vdbemem = port_lua_get_vdbemem,
+	.enlight = port_lua_enlight,
 	.destroy = port_lua_destroy,
 };
 

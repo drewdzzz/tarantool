@@ -133,6 +133,10 @@ struct port_vtab {
 	 * implementation
 	 */
 	struct Mem *(*get_vdbemem)(struct port *port, uint32_t *size);
+	/**
+	 * Turn port into port_light, which allow to iterate over values.
+	 */
+	void (*enlight)(struct port *port);
 	/** Destroy a port and release associated resources. */
 	void (*destroy)(struct port *port);
 };
@@ -200,6 +204,12 @@ static inline const char *
 port_get_msgpack(struct port *port, uint32_t *size)
 {
 	return port->vtab->get_msgpack(port, size);
+}
+
+static inline void
+port_enlight(struct port *port)
+{
+	return port->vtab->enlight(port);
 }
 
 static inline struct Mem *

@@ -377,6 +377,13 @@ port_light_destroy(struct port *base)
 	mempool_free(&port_light_data_pool, port->data);
 }
 
+void
+port_light_enlight(struct port *base)
+{
+	/** It is already light. */
+	(void)base;
+}
+
 const struct port_vtab port_light_vtab = {
 	.dump_msgpack = NULL,
 	.dump_msgpack_16 = NULL,
@@ -384,6 +391,7 @@ const struct port_vtab port_light_vtab = {
 	.dump_plain = NULL,
 	.get_msgpack = NULL,
 	.get_vdbemem = NULL,
+	.enlight = port_light_enlight,
 	.destroy = port_light_destroy,
 };
 
