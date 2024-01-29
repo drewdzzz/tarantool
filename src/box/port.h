@@ -34,6 +34,9 @@
 #include "small/obuf.h"
 #include <port.h>
 #include <stdbool.h>
+#include "diag.h"
+#include "error.h"
+#include "tuple.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -198,6 +201,283 @@ port_free(void);
 int
 port_c_dump_msgpack_wrapped(struct port *port, struct obuf *out,
 			    struct mp_ctx *ctx);
+
+/**
+ * Type of value in port_light.
+ */
+enum port_light_value_type {
+	TNT_NULL,
+	TNT_DOUBLE,
+	TNT_TUPLE,
+	TNT_STR,
+	TNT_BOOL,
+	TNT_MP,
+	TNT_ITER,
+};
+
+/**
+ * Type of function that can be used as an iterator_next method in port_light.
+ * The state of an iterator is passed as the first argument.
+ * The port to yield values is passed as the second value.
+ * Function must return 0 and initialize port out in the case of success.
+ * In the case of error, port out must not be initialized, diag must be set
+ * and -1 must be returned.
+ */
+typedef int
+(*port_light_iterator_next_f)(void *state, struct port *out);
+
+/**
+ * Value of port_light - a variant of pre-defined types.
+ */
+struct port_light_cell {
+	/** Type of underlying value. */
+	enum port_light_value_type type;
+	/** Value itself. */
+	union {
+		/** Floating point number. */
+		double number;
+		/** Tuple. Is referenced. */
+		struct tuple *tuple;
+		/**
+		 * String. No ownership.
+		 * Is not guaranteed to be zero-terminated.
+		 */
+		struct {
+			/** String itself. */
+			const char *data;
+			/** Length of string. */
+			size_t len;
+		} str;
+		/** Boolean value. */
+		bool boolean;
+		/** MsgPack packet. No ownership. */
+		struct {
+			/** Start of packet. */
+			const char *data;
+			/** End of packet. */
+			const char *data_end;
+		} mp;
+		/** Iterator. */
+		struct {
+			/** State of iterator. */
+			void *state;
+			/** Pointer to iterator_next function. */
+			port_light_iterator_next_f next;
+		} iter;
+	} value;
+};
+
+enum {
+	PORT_LIGHT_CAPACITY = 6,
+};
+
+/**
+ * Lightweight port with limited capacity.
+ * Can be dumped as many times as you need.
+ * Does not own objects, strings and MsgPack packets are not copied.
+ * However, tuples are referenced.
+ */
+struct port_light {
+	/** Virtual table pointer. */
+	const struct port_vtab *vtab;
+	/** Pointer to array with data, has limited capacity. */
+	struct port_light_cell *data;
+	/** Number of values in data. */
+	uint32_t size;
+};
+
+static_assert(sizeof(struct port_light) <= sizeof(struct port),
+	      "sizeof(struct port_light) must be <= sizeof(struct port)");
+
+void
+port_light_create(struct port *base);
+
+static inline void
+port_light_add_null(struct port *base)
+{
+	struct port_light *port = (struct port_light *)base;
+	int i = port->size;
+	port->data[i].type = TNT_NULL;
+
+	port->size++;
+	assert(port->size <= PORT_LIGHT_CAPACITY);
+}
+
+static inline void
+port_light_add_double(struct port *base, double val)
+{
+	struct port_light *port = (struct port_light *)base;
+	int i = port->size;
+	port->data[i].type = TNT_DOUBLE;
+	port->data[i].value.number = val;
+
+	port->size++;
+	assert(port->size <= PORT_LIGHT_CAPACITY);
+}
+
+static inline void
+port_light_add_tuple(struct port *base, struct tuple *t)
+{
+	struct port_light *port = (struct port_light *)base;
+	int i = port->size;
+	port->data[i].type = TNT_TUPLE;
+	port->data[i].value.tuple = t;
+	tuple_ref(t);
+
+	port->size++;
+	assert(port->size <= PORT_LIGHT_CAPACITY);
+}
+
+static inline void
+port_light_add_str(struct port *base, const char *data, size_t len)
+{
+	struct port_light *port = (struct port_light *)base;
+	int i = port->size;
+	port->data[i].type = TNT_STR;
+	port->data[i].value.str.data = data;
+	port->data[i].value.str.len = len;
+
+	port->size++;
+	assert(port->size <= PORT_LIGHT_CAPACITY);
+}
+
+static inline void
+port_light_add_str0(struct port *base, const char *data)
+{
+	port_light_add_str(base, data, strlen(data));
+}
+
+static inline void
+port_light_add_bool(struct port *base, bool val)
+{
+	struct port_light *port = (struct port_light *)base;
+	int i = port->size;
+	port->data[i].type = TNT_BOOL;
+	port->data[i].value.boolean = val;
+
+	port->size++;
+	assert(port->size <= PORT_LIGHT_CAPACITY);
+}
+
+static inline void
+port_light_add_mp(struct port *base, const char *data, const char *data_end)
+{
+	struct port_light *port = (struct port_light *)base;
+	int i = port->size;
+	port->data[i].type = TNT_MP;
+	port->data[i].value.mp.data = data;
+	port->data[i].value.mp.data_end = data_end;
+
+	port->size++;
+	assert(port->size <= PORT_LIGHT_CAPACITY);
+}
+
+static inline void
+port_light_add_iterator(struct port *base, void *state,
+			port_light_iterator_next_f next)
+{
+	struct port_light *port = (struct port_light *)base;
+	int i = port->size;
+	port->data[i].type = TNT_ITER;
+	port->data[i].value.iter.state = state;
+	port->data[i].value.iter.next = next;
+
+	port->size++;
+	assert(port->size <= PORT_LIGHT_CAPACITY);
+}
+
+static inline bool
+port_light_is_none(struct port *base, size_t idx)
+{
+	struct port_light *port = (struct port_light *)base;
+	return idx >= port->size;
+}
+
+static inline bool
+port_light_is_null(struct port *base, size_t idx)
+{
+	struct port_light *port = (struct port_light *)base;
+	return idx < port->size && port->data[idx].type == TNT_NULL;
+}
+
+static inline bool
+port_light_is_bool(struct port *base, size_t idx)
+{
+	struct port_light *port = (struct port_light *)base;
+	return idx < port->size && port->data[idx].type == TNT_BOOL;
+}
+
+static inline void
+port_light_get_bool(struct port *base, size_t idx, bool *val)
+{
+	assert(port_light_is_bool(base, idx));
+	struct port_light *port = (struct port_light *)base;
+	*val = port->data[idx].value.boolean;
+}
+
+static inline bool
+port_light_is_double(struct port *base, size_t idx)
+{
+	struct port_light *port = (struct port_light *)base;
+	return idx < port->size && port->data[idx].type == TNT_DOUBLE;
+}
+
+static inline void
+port_light_get_double(struct port *base, size_t idx, double *val)
+{
+	assert(port_light_is_double(base, idx));
+	struct port_light *port = (struct port_light *)base;
+	*val = port->data[idx].value.number;
+}
+
+static inline bool
+port_light_is_tuple(struct port *base, size_t idx)
+{
+	struct port_light *port = (struct port_light *)base;
+	return idx < port->size && port->data[idx].type == TNT_TUPLE;
+}
+
+static inline void
+port_light_get_tuple(struct port *base, size_t idx, struct tuple **tuple)
+{
+	assert(port_light_is_tuple(base, idx));
+	struct port_light *port = (struct port_light *)base;
+	*tuple = port->data[idx].value.tuple;
+	tuple_ref(*tuple);
+}
+
+static inline bool
+port_light_is_str(struct port *base, size_t idx)
+{
+	struct port_light *port = (struct port_light *)base;
+	return idx < port->size && port->data[idx].type == TNT_STR;
+}
+
+static inline void
+port_light_get_str(struct port *base, size_t idx, const char **str, size_t *len)
+{
+	assert(port_light_is_str(base, idx));
+	struct port_light *port = (struct port_light *)base;
+	*str = port->data[idx].value.str.data;
+	*len = port->data[idx].value.str.len;
+}
+
+static inline bool
+port_light_is_mp(struct port *base, size_t idx)
+{
+	struct port_light *port = (struct port_light *)base;
+	return idx < port->size && port->data[idx].type == TNT_MP;
+}
+
+static inline void
+port_light_get_mp(struct port *base, size_t idx, const char **data,
+		  const char **data_end)
+{
+	assert(port_light_is_mp(base, idx));
+	struct port_light *port = (struct port_light *)base;
+	*data = port->data[idx].value.mp.data;
+	*data_end = port->data[idx].value.mp.data_end;
+}
 
 #if defined(__cplusplus)
 } /* extern "C" */

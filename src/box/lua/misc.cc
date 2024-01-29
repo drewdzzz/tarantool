@@ -229,6 +229,108 @@ port_c_dump_lua(struct port *base, struct lua_State *L,
 	}
 }
 
+/**
+ * This function must be pushed as a closure with 2 upvalues.
+ * Advances the iterator - invokes iterator_next() with a saved state.
+ * For details, see description of port_light_push_lua_iterator().
+ */
+static int
+port_light_lua_iterator_next(lua_State *L)
+{
+	void *iterator_next_raw = lua_touserdata(L, lua_upvalueindex(1));
+	port_light_iterator_next_f iterator_next =
+		(port_light_iterator_next_f)iterator_next_raw;
+	void *state = lua_touserdata(L, lua_upvalueindex(2));
+	struct port port;
+	int rc = iterator_next(state, &port);
+	if (rc != 0)
+		luaT_error(L);
+	int top_svp = lua_gettop(L);
+	port_dump_lua(&port, L, PORT_DUMP_LUA_MODE_FLAT);
+	port_destroy(&port);
+	return lua_gettop(L) - top_svp;
+}
+
+/**
+ * This function must be pushed as a closure with 2 upvalues.
+ * Creates an iterator - pushes another closure with the same upvalues.
+ * For details, see description of port_light_push_lua_iterator().
+ */
+static int
+port_light_lua_iterator_start(lua_State *L)
+{
+	for (int i = 1; i <= 2; ++i)
+		lua_pushvalue(L, lua_upvalueindex(i));
+	lua_pushcclosure(L, port_light_lua_iterator_next, 2);
+	return 1;
+}
+
+/**
+ * Iterators in Lua are implemented as usual functions (or closures), which
+ * return the next element. So this function pushes a closure, that returns an
+ * actual iterator - another closure, which is a wrapper over iterator_next.
+ * That's how it looks from Lua:
+ * function(iter)
+ *     for v1, v2 in iter() do
+ *         process(v1, v2)
+ *     end
+ * end
+ */
+static void
+port_light_push_lua_iterator(struct lua_State *L,
+			     port_light_iterator_next_f next, void *state)
+{
+	lua_pushlightuserdata(L, (void *)next);
+	lua_pushlightuserdata(L, state);
+	lua_pushcclosure(L, port_light_lua_iterator_start, 2);
+}
+
+extern "C" void
+port_light_dump_lua(struct port *base, struct lua_State *L,
+		    enum port_dump_lua_mode mode)
+{
+	assert(mode == PORT_DUMP_LUA_MODE_FLAT ||
+	       mode == PORT_DUMP_LUA_MODE_TABLE);
+	struct port_light *port = (struct port_light *)base;
+	if (mode == PORT_DUMP_LUA_MODE_TABLE)
+		lua_createtable(L, port->size, 0);
+	for (size_t i = 0; i < port->size; i++) {
+		struct port_light_cell *val = &port->data[i];
+		switch (val->type) {
+		case TNT_NULL:
+			lua_pushnil(L);
+			break;
+		case TNT_BOOL:
+			lua_pushboolean(L, val->value.boolean);
+			break;
+		case TNT_DOUBLE:
+			lua_pushnumber(L, val->value.number);
+			break;
+		case TNT_TUPLE:
+			luaT_pushtuple(L, val->value.tuple);
+			break;
+		case TNT_STR:
+			lua_pushlstring(L, val->value.str.data,
+					val->value.str.len);
+			break;
+		case TNT_MP:
+			luamp_push(L, val->value.mp.data,
+				   val->value.mp.data_end);
+			break;
+		case TNT_ITER: {
+			port_light_push_lua_iterator(
+				L, val->value.iter.next,
+				val->value.iter.state);
+			break;
+		}
+		default:
+			unreachable();
+		}
+		if (mode == PORT_DUMP_LUA_MODE_TABLE)
+			lua_rawseti(L, -2, i + 1);
+	}
+}
+
 extern "C" void
 port_msgpack_dump_lua(struct port *base, struct lua_State *L,
 		      enum port_dump_lua_mode mode)

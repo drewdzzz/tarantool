@@ -351,14 +351,62 @@ port_c_create(struct port *base)
 	port->size = 0;
 }
 
+/**
+ * Mempool for port_light data storage.
+ */
+static struct mempool port_light_data_pool;
+
+enum {
+	/** Size of block used for port_light data */
+	PORT_LIGHT_DATA_POOL =
+		PORT_LIGHT_CAPACITY * sizeof(struct port_light_cell),
+};
+
+extern void
+port_light_dump_lua(struct port *base, struct lua_State *L,
+		    enum port_dump_lua_mode mode);
+
+void
+port_light_destroy(struct port *base)
+{
+	struct port_light *port = (struct port_light *)base;
+	for (size_t i = 0; i < port->size; i++) {
+		if (port->data[i].type == TNT_TUPLE)
+			tuple_unref(port->data[i].value.tuple);
+	}
+	mempool_free(&port_light_data_pool, port->data);
+}
+
+const struct port_vtab port_light_vtab = {
+	.dump_msgpack = NULL,
+	.dump_msgpack_16 = NULL,
+	.dump_lua = port_light_dump_lua,
+	.dump_plain = NULL,
+	.get_msgpack = NULL,
+	.get_vdbemem = NULL,
+	.destroy = port_light_destroy,
+};
+
+void
+port_light_create(struct port *base)
+{
+	struct port_light *port = (struct port_light *)base;
+	port->vtab = &port_light_vtab;
+	port->data = mempool_alloc(&port_light_data_pool);
+	port->size = 0;
+}
+
 void
 port_init(void)
 {
 	mempool_create(&port_entry_pool, &cord()->slabc, PORT_ENTRY_SIZE);
+	mempool_create(&port_light_data_pool, &cord()->slabc,
+		       PORT_LIGHT_DATA_POOL);
 }
 
 void
 port_free(void)
 {
 	mempool_destroy(&port_entry_pool);
+	mempool_destroy(&port_light_data_pool);
 }
