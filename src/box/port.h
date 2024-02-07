@@ -96,6 +96,8 @@ struct port_lua {
 	int ref;
 	/** Number of entries dumped to the port. */
 	int size;
+	/** Bottom index of values to be dumped. */
+	int bottom;
 };
 
 static_assert(sizeof(struct port_lua) <= sizeof(struct port),

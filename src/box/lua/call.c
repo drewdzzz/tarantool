@@ -358,6 +358,7 @@ port_lua_create(struct port *port, struct lua_State *L)
 	 * @Sa luaL_unref.
 	 */
 	port_lua->ref = -1;
+	port_lua->bottom = 1;
 }
 
 struct execute_lua_ctx {
@@ -556,10 +557,10 @@ port_lua_do_dump_with_ctx(struct port *base, struct mpstream *stream,
 	 * Insert corresponding encoder to the bottom and push
 	 * encode context as lightuserdata to the top.
 	 */
-	const int size = lua_gettop(L);
+	const int size = lua_gettop(L) - port->bottom + 1;
 	lua_rawgeti(L, LUA_REGISTRYINDEX, execute_lua_refs[handler]);
 	assert(lua_isfunction(L, -1) && lua_iscfunction(L, -1));
-	lua_insert(L, 1);
+	lua_insert(L, port->bottom);
 	lua_pushlightuserdata(L, &encode_lua_ctx);
 	/* nargs -- all arguments + lightuserdata. */
 	if (luaT_call(L, size + 1, 0) != 0)
@@ -614,7 +615,7 @@ port_lua_dump_lua(struct port *base, struct lua_State *L,
 	       mode == PORT_DUMP_LUA_MODE_MP_OBJECT);
 	if (mode == PORT_DUMP_LUA_MODE_FLAT) {
 		struct port_lua *port = (struct port_lua *)base;
-		uint32_t size = lua_gettop(port->L);
+		uint32_t size = lua_gettop(port->L) - port->bottom + 1;
 		lua_xmove(port->L, L, size);
 		port->size = size;
 	} else {
@@ -656,7 +657,7 @@ port_lua_enlight(struct port *port)
 	port_light_create(port);
 	struct lua_State *L = port_lua->L;
 	int top = lua_gettop(L);
-	for (int i = 1; i <= top; i++) {
+	for (int i = port_lua->bottom; i <= top; i++) {
 		switch (lua_type(L, i)) {
 		case LUA_TNIL:
 			port_light_add_null(port);
@@ -701,6 +702,7 @@ port_lua_destroy(struct port *base)
 {
 	struct port_lua *port = (struct port_lua *)base;
 	assert(port->vtab == &port_lua_vtab);
+	lua_settop(port->L, port->bottom - 1);
 	luaL_unref(tarantool_L, LUA_REGISTRYINDEX, port->ref);
 }
 
