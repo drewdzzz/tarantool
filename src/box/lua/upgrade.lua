@@ -1391,6 +1391,27 @@ local function create_persistent_gc_state_if_not_exists(issue_handler)
     log.info("open transaction to atomically create persistent WAL GC state")
     box.begin()
 
+    -- When upgrading schema in a cluster, `box.schema.upgrade()` is called
+    -- only on master, and we need to create gc consumers on all instances
+    -- strictly after space _gc_consumers is created, so let's register
+    -- a persistent trigger that will be replicated and persist gc consumers
+    -- on all instances right after the space and its primary key are created.
+    log.info("create persistent trigger to persist gc consumers on replicas")
+    local trigger_body_raw = [[function(old, new)
+        if new ~= nil and new[1] == %d then
+            box.internal.persist_gc_consumers()
+        end
+    end]]
+    local trigger_body = string.format(trigger_body_raw, space_id)
+    -- The trigger should be set on space _index - then we will persist
+    -- consumers only when the space has primary index.
+    -- Also note that we rely on the fact that system triggers are fired
+    -- before user-defined ones - then the trigger will be fired after the
+    -- index is actually created.
+    box.schema.func.create('_on_gc_consumers_creation', {
+        language = 'LUA', body = trigger_body,
+        trigger = 'box.space._index.on_replace'})
+
     log.info("create space _gc_consumers")
     local format = {{name = 'uuid', type = 'string'},
                     {name = 'vclock', type = 'map'},
@@ -1405,6 +1426,9 @@ local function create_persistent_gc_state_if_not_exists(issue_handler)
     log.info("grant read,write on space _gc_consumers to replication")
     local priv = box.priv.R + box.priv.W
     _priv:replace{ADMIN, REPLICATION, 'space', box.schema.GC_CONSUMERS_ID, priv}
+
+    log.info("drop the persistent trigger used for persisting gc consumers")
+    _func.index.name:delete('_on_gc_consumers_creation')
 
     log.info("commit transaction atomically creating persistent WAL GC state")
     box.commit()

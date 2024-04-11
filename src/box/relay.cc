@@ -40,10 +40,10 @@
 #include "memory.h"
 #include "say.h"
 
+#include "box.h"
 #include "coio.h"
 #include "coio_task.h"
 #include "engine.h"
-#include "gc.h"
 #include "iostream.h"
 #include "iproto_constants.h"
 #include "recovery.h"
@@ -57,6 +57,7 @@
 #include "wal.h"
 #include "txn_limbo.h"
 #include "raft.h"
+#include "session.h"
 
 #include <stdlib.h>
 
@@ -637,12 +638,25 @@ tx_status_update(struct cmsg *msg)
 
 /**
  * Update replica gc state in tx thread.
+ * Note that there is a case when replica and its consumer were dropped
+ * from system spaces, but the relay is not stopped yet - we must not create
+ * new gc consumer in this case, because it will become hanging. So the
+ * function tries to update gc_consumer - it is not created if it doesn't
+ * exist.
  */
 static void
 tx_gc_advance(struct cmsg *msg)
 {
 	struct relay_gc_msg *m = (struct relay_gc_msg *)msg;
-	gc_consumer_advance(m->relay->replica->gc, &m->vclock);
+	struct credentials *old_user = effective_user();
+
+	fiber_set_user(fiber(), &admin_credentials);
+	if (box_gc_consumer_update(m->relay->replica, &m->vclock) != 0) {
+		say_error("Cannot advance gc consumer for replica %u",
+			  m->relay->replica->id);
+		diag_log();
+	}
+	fiber_set_user(fiber(), old_user);
 	free(m);
 }
 
@@ -1100,23 +1114,17 @@ relay_subscribe(struct replica *replica, struct iostream *io, uint64_t sync,
 	assert(relay->state != RELAY_FOLLOW);
 	/*
 	 * Register the replica with the garbage collector.
-	 * In case some of the replica's WAL files were deleted, it might
-	 * subscribe with a smaller vclock than the master remembers, so
-	 * recreate the gc consumer unconditionally to make sure it holds
-	 * the correct vclock.
+	 * The consumer is set with TXN_FORCE_ASYNC flag because waiting while
+	 * previous synchronous transactions will be committed would lead to a
+	 * deadlock in the case when quorum is not connected and is trying to
+	 * subscribe but it stucks here.
 	 */
-	if (!replica->anon) {
-		bool had_gc = false;
-		if (replica->gc != NULL) {
-			gc_consumer_unregister(replica->gc);
-			had_gc = true;
-		}
-		replica->gc = gc_consumer_register(replica_clock, "replica %s",
-						   tt_uuid_str(&replica->uuid));
-		if (replica->gc == NULL)
-			diag_raise();
-		if (!had_gc)
-			gc_delay_unref();
+	if (!replica->anon &&
+	    box_gc_consumer_set_force_async(replica, replica_clock,
+					    false) != 0) {
+		say_error("Cannot modify gc consumer for replica %u",
+			  replica->id);
+		diag_raise();
 	}
 
 	if (replica_version_id < version_id(2, 6, 0) || replica->anon)

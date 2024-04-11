@@ -170,6 +170,8 @@ g.test_lag_no_update_when_replica_follows_third_node = function(cg)
         box.space.test:replace{1}
         return box.info.vclock
     end)
+    -- Ignore local lsn
+    vclock[0] = nil
     cg.server1:exec(function(id, vclock, lag)
         t.helpers.retrying({}, function()
             require('log').info(box.info.replication[id].downstream)

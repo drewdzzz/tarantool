@@ -491,6 +491,7 @@ t;
  |   282: box.error.REPLICASET_NO_WRITABLE
  |   283: box.error.REPLICASET_MORE_THAN_ONE_WRITABLE
  |   284: box.error.TXN_COMMIT
+ |   285: box.error.INVALID_VCLOCK
  | ...
 
 test_run:cmd("setopt delimiter ''");
