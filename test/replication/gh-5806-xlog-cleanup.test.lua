@@ -62,16 +62,15 @@ box.space.test:insert({1})
 box.snapshot()
 
 --
--- We need to restart the master node since otherwise
+-- We need to delete replica's gc consumer since otherwise
 -- the replica will be preventing us from removing old
--- xlog because it will be tracked by gc consumer which
--- kept in memory while master node is running.
+-- xlog.
 --
--- Once restarted we write a new record into master's
+-- After that, we write a new record into master's
 -- space and run snapshot which removes old xlog required
 -- by replica to subscribe leading to XlogGapError which
 -- we need to test.
-test_run:cmd('restart server master')
+_ = box.space._gc_consumers:delete(box.space._cluster:get(2)[2])
 box.space.test:insert({2})
 box.snapshot()
 assert(not box.info.gc().is_paused)

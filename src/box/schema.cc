@@ -189,6 +189,9 @@ on_replace_dd_system_space(struct trigger *trigger, void *event)
 {
 	(void) trigger;
 	struct txn *txn = (struct txn *) event;
+	struct txn_stmt *stmt = txn_current_stmt(txn);
+	if (stmt->space->def->id == BOX_GC_CONSUMERS_ID)
+		return 0;
 	if (txn->space_on_replace_triggers_depth > 1) {
 		diag_set(ClientError, ER_UNSUPPORTED,
 			 "Space on_replace trigger", "DDL operations");
@@ -204,12 +207,16 @@ on_replace_dd_system_space(struct trigger *trigger, void *event)
 	return 0;
 }
 
-/** A wrapper around space_new() for data dictionary spaces. */
+/**
+ * A wrapper around space_new() for data dictionary spaces.
+ * Allows to create a space with arbitrary opts.
+ */
 static void
-sc_space_new(uint32_t id, const char *name,
-	     struct key_part_def *key_parts,
-	     uint32_t key_part_count,
-	     struct trigger *replace_trigger)
+sc_space_new_with_opts(uint32_t id, const char *name,
+		       struct key_part_def *key_parts,
+		       uint32_t key_part_count,
+		       struct trigger *replace_trigger,
+		       const struct space_opts *opts)
 {
 	struct key_def *key_def = key_def_new(key_parts, key_part_count, 0);
 	if (key_def == NULL)
@@ -229,8 +236,7 @@ sc_space_new(uint32_t id, const char *name,
 		make_scoped_guard([=] { index_def_delete(index_def); });
 	struct space_def *def =
 		space_def_new_xc(id, ADMIN, 0, name, strlen(name), "memtx",
-				 strlen("memtx"), &space_opts_default, NULL, 0,
-				 NULL, 0);
+				 strlen("memtx"), opts, NULL, 0, NULL, 0);
 	auto def_guard = make_scoped_guard([=] { space_def_delete(def); });
 	struct rlist key_list;
 	rlist_create(&key_list);
@@ -253,6 +259,36 @@ sc_space_new(uint32_t id, const char *name,
 	 *   a snapshot of older version.
 	 */
 	init_system_space(space);
+}
+
+/**
+ * A specialization of sc_space_new_with_opts.
+ * Creates a space with default opts.
+ */
+static inline void
+sc_space_new(uint32_t id, const char *name,
+	     struct key_part_def *key_parts,
+	     uint32_t key_part_count,
+	     struct trigger *replace_trigger)
+{
+	sc_space_new_with_opts(id, name, key_parts, key_part_count,
+			       replace_trigger, &space_opts_default);
+}
+
+/**
+ * A specialization of sc_space_new_with_opts.
+ * Creates a local space, all other opts are default.
+ */
+static inline void
+sc_space_new_local(uint32_t id, const char *name,
+		   struct key_part_def *key_parts,
+		   uint32_t key_part_count,
+		   struct trigger *replace_trigger)
+{
+	struct space_opts opts = space_opts_default;
+	opts.group_id = 1;
+	sc_space_new_with_opts(id, name, key_parts, key_part_count,
+			       replace_trigger, &opts);
 }
 
 int
@@ -428,6 +464,16 @@ schema_init(void)
 	key_parts[1].type = FIELD_TYPE_UNSIGNED;
 	sc_space_new(BOX_FUNC_INDEX_ID, "_func_index", key_parts, 2,
 		     &on_replace_func_index);
+
+	/* _gc_consumers - gc_consumers for replicas. */
+	key_parts[0].fieldno = 0; /* UUID */
+	key_parts[0].type = FIELD_TYPE_STRING;
+	key_parts[1].fieldno = 1; /* vclock */
+	key_parts[1].type = FIELD_TYPE_MAP;
+	key_parts[2].fieldno = 2; /* opts */
+	key_parts[2].type = FIELD_TYPE_MAP;
+	sc_space_new_local(BOX_GC_CONSUMERS_ID, "_gc_consumers", key_parts, 3,
+			   &on_replace_gc_consumers);
 
 	/*
 	 * _vinyl_deferred_delete - blackhole that is needed

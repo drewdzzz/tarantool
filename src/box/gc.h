@@ -97,6 +97,8 @@ struct gc_consumer {
 	 * deleted by the WAL thread on ENOSPC.
 	 */
 	bool is_inactive;
+	/** This flag is set if the consumer tracks snapshot. */
+	bool with_snap;
 };
 
 typedef rb_tree(struct gc_consumer) gc_tree_t;
@@ -342,9 +344,10 @@ gc_unref_checkpoint(struct gc_checkpoint_ref *ref);
  * Returns a pointer to the new consumer object or NULL on
  * memory allocation failure.
  */
-CFORMAT(printf, 2, 3)
+CFORMAT(printf, 3, 4)
 struct gc_consumer *
-gc_consumer_register(const struct vclock *vclock, const char *format, ...);
+gc_consumer_register(const struct vclock *vclock, bool with_snap,
+		     const char *format, ...);
 
 /**
  * Unregister a consumer and invoke garbage collection
@@ -352,13 +355,6 @@ gc_consumer_register(const struct vclock *vclock, const char *format, ...);
  */
 void
 gc_consumer_unregister(struct gc_consumer *consumer);
-
-/**
- * Advance the vclock tracked by a consumer and
- * invoke garbage collection if needed.
- */
-void
-gc_consumer_advance(struct gc_consumer *consumer, const struct vclock *vclock);
 
 /**
  * Iterator over registered consumers. The iterator is valid
@@ -382,6 +378,35 @@ gc_consumer_iterator_init(struct gc_consumer_iterator *it)
  */
 struct gc_consumer *
 gc_consumer_iterator_next(struct gc_consumer_iterator *it);
+
+struct replica;
+
+/**
+ * Sets a gc consumer with @a vclock for @a replica. If the replica
+ * had another consumer, it is deleted.
+ */
+int
+box_gc_consumer_set(struct replica *replica, const struct vclock *vclock,
+		    bool with_snap);
+
+/**
+ * The same as box_gc_consumer_set, but is done in a transaction with flag
+ * TXN_FORCE_ASYNC. For extra safety, this function must not be called inside
+ * existing transaction.
+ */
+int
+box_gc_consumer_set_async(struct replica *replica, const struct vclock *vclock,
+			  bool with_snap);
+
+/**
+ * The same box_gc_consumer, but no-op in the case when the consumer does not
+ * exist. Musnt't be called inside active transaction.
+ */
+int
+box_gc_consumer_update(struct replica *replica, const struct vclock *vclock);
+
+int
+box_gc_consumer_unregister(struct replica *replica);
 
 #if defined(__cplusplus)
 } /* extern "C" */

@@ -4269,6 +4269,26 @@ box_register_replica(const struct tt_uuid *uuid,
 	box_insert_replica_record(replica_id, uuid, name);
 }
 
+static struct replica *
+box_register_replica_with_consumer(const struct tt_uuid *uuid, const char *name,
+				   const struct vclock *vclock)
+{
+	struct txn *txn = txn_begin();
+	if (txn == NULL)
+		diag_raise();
+	auto txn_guard = make_scoped_guard([&] { txn_abort(txn); });
+	box_register_replica(uuid, name);
+	struct replica *replica = replica_by_uuid(uuid);
+	if (replica == NULL)
+		tnt_raise(ClientError, ER_CANNOT_REGISTER);
+	if (box_gc_consumer_set(replica, vclock, false) != 0)
+		diag_raise();
+	txn_guard.is_active = false;
+	if (txn_commit(txn) != 0)
+		diag_raise();
+	return replica;
+}
+
 int
 box_process_auth(struct auth_request *request,
 		 const char *salt, uint32_t salt_len)
@@ -4390,21 +4410,13 @@ box_process_register(struct iostream *io, const struct xrow_header *header)
 
 	/* @sa box_process_subscribe(). */
 	vclock_reset(&req.vclock, 0, vclock_get(&replicaset.vclock, 0));
-	struct gc_consumer *gc = gc_consumer_register(
-		&req.vclock, "replica %s", tt_uuid_str(&req.instance_uuid));
-	if (gc == NULL)
-		diag_raise();
-	auto gc_guard = make_scoped_guard([&] { gc_consumer_unregister(gc); });
-
 	say_info("registering replica %s at %s",
 		 tt_uuid_str(&req.instance_uuid), sio_socketname(io->fd));
-	box_register_replica(&req.instance_uuid, req.instance_name);
-
+	
+	replica = box_register_replica_with_consumer(
+		&req.instance_uuid, req.instance_name, &req.vclock);
 	ERROR_INJECT_YIELD(ERRINJ_REPLICA_JOIN_DELAY);
 
-	replica = replica_by_uuid(&req.instance_uuid);
-	if (replica == NULL)
-		tnt_raise(ClientError, ER_CANNOT_REGISTER);
 	/* Remember master's vclock after the last request */
 	struct vclock stop_vclock;
 	vclock_copy(&stop_vclock, &replicaset.vclock);
@@ -4429,11 +4441,11 @@ box_process_register(struct iostream *io, const struct xrow_header *header)
 	 * registration was complete and assign it to the
 	 * replica.
 	 */
-	gc_consumer_advance(gc, &stop_vclock);
-	if (replica->gc != NULL)
-		gc_consumer_unregister(replica->gc);
-	replica->gc = gc;
-	gc_guard.is_active = false;
+	if (box_gc_consumer_set(replica, &stop_vclock, false) != 0) {
+		say_error("Cannot advance gc consumer for replica %u",
+			  replica->id);
+		diag_log();
+	}
 }
 
 void
@@ -4532,15 +4544,17 @@ box_process_join(struct iostream *io, const struct xrow_header *header)
 				  tt_uuid_str(&other->uuid));
 		}
 	}
+
 	/*
 	 * Register the replica as a WAL consumer so that
 	 * it can resume FINAL JOIN where INITIAL JOIN ends.
 	 */
-	struct gc_consumer *gc = gc_consumer_register(&replicaset.vclock,
-				"replica %s", tt_uuid_str(&req.instance_uuid));
+	struct gc_consumer *gc = gc_consumer_register(
+		&replicaset.vclock, false,  "replica %s join",
+		tt_uuid_str(&req.instance_uuid));
 	if (gc == NULL)
 		diag_raise();
-	auto gc_guard = make_scoped_guard([&] { gc_consumer_unregister(gc); });
+	auto gc_guard = make_scoped_guard([&] { if (gc != NULL) gc_consumer_unregister(gc); });
 
 	say_info("joining replica %s at %s",
 		 tt_uuid_str(&req.instance_uuid), sio_socketname(io->fd));
@@ -4555,13 +4569,10 @@ box_process_join(struct iostream *io, const struct xrow_header *header)
 	 * Register the replica after sending the last row but before sending
 	 * OK - if the registration fails, the error reaches the client.
 	 */
-	box_register_replica(&req.instance_uuid, req.instance_name);
+	replica = box_register_replica_with_consumer(
+		&req.instance_uuid, req.instance_name, &gc->vclock);
 
 	ERROR_INJECT_YIELD(ERRINJ_REPLICA_JOIN_DELAY);
-
-	replica = replica_by_uuid(&req.instance_uuid);
-	if (replica == NULL)
-		tnt_raise(ClientError, ER_CANNOT_REGISTER);
 
 	/* Remember master's vclock after the last request */
 	struct vclock stop_vclock;
@@ -4590,11 +4601,11 @@ box_process_join(struct iostream *io, const struct xrow_header *header)
 	 * Advance the WAL consumer state to the position where
 	 * FINAL JOIN ended and assign it to the replica.
 	 */
-	gc_consumer_advance(gc, &stop_vclock);
-	if (replica->gc != NULL)
-		gc_consumer_unregister(replica->gc);
-	replica->gc = gc;
-	gc_guard.is_active = false;
+	if (box_gc_consumer_set(replica, &stop_vclock, false) != 0) {
+		say_error("Cannot advance gc consumer for replica %u",
+			  replica->id);
+		diag_log();
+	}
 }
 
 void
@@ -4810,6 +4821,139 @@ box_process_vote(struct ballot *ballot)
 
 	ballot->registered_replica_uuids_size = i;
 }
+
+/**
+ * The function returns true iff current schema supports
+ * persistent gc consumers.
+ */
+static inline bool
+box_gc_consumer_is_persistent(void)
+{
+	return dd_version_id >= version_id(3, 2, 0);
+}
+
+static int
+box_gc_consumer_set_in_memory(struct replica *replica, const struct vclock *vclock)
+{
+	assert(!box_gc_consumer_is_persistent());
+	/** No in-memory gc consumers for anonymous replicas. */
+	if (replica->anon)
+		return 0;
+	if (replica->gc != NULL)
+		gc_consumer_unregister(replica->gc);
+	replica->gc = gc_consumer_register(vclock, false,
+					   "replica %d", replica->id);
+	return replica->gc != NULL ? 0 : -1;
+}
+
+static int
+box_gc_consumer_set_impl(struct replica *replica, const struct vclock *vclock,
+			 bool with_snap)
+{
+	assert(box_gc_consumer_is_persistent());
+
+	char tuple_buf[VCLOCK_STR_LEN_MAX + UUID_STR_LEN];
+	char *data = tuple_buf;
+	data = mp_encode_array(data, 3);
+	data = mp_encode_str0(data, tt_uuid_str(&replica->uuid));
+	data = mp_encode_vclock_ignore0(data, vclock);
+	
+	size_t opts_size = 0;
+	if (with_snap)
+		opts_size++;
+
+	data = mp_encode_map(data, opts_size);
+	if (with_snap) {
+		data = mp_encode_str0(data, "with_snap");
+		data = mp_encode_bool(data, true);
+	}
+	assert((size_t)(data - tuple_buf) < sizeof(tuple_buf));
+
+	return box_replace(BOX_GC_CONSUMERS_ID, tuple_buf, data, NULL);
+}
+
+int
+box_gc_consumer_set(struct replica *replica, const struct vclock *vclock,
+		   bool with_snap)
+{
+	if (!box_gc_consumer_is_persistent())
+		return box_gc_consumer_set_in_memory(replica, vclock);
+
+	return box_gc_consumer_set_impl(replica, vclock, with_snap);
+}
+
+int
+box_gc_consumer_set_async(struct replica *replica,
+			  const struct vclock *vclock, bool with_snap)
+{
+	if (!box_gc_consumer_is_persistent())
+		return box_gc_consumer_set_in_memory(replica, vclock);
+
+	assert(in_txn() == NULL);
+	struct txn *txn = txn_begin();
+	if (txn == NULL)
+		return -1;
+	txn_set_flags(in_txn(), TXN_FORCE_ASYNC);
+	if (box_gc_consumer_set_impl(replica, vclock, with_snap) != 0) {
+		txn_abort(txn);
+		return -1;
+	}
+	return txn_commit(txn);
+}
+
+int
+box_gc_consumer_unregister(struct replica *replica)
+{
+	if (!box_gc_consumer_is_persistent()) {
+		if (replica->gc != NULL) {
+			gc_consumer_unregister(replica->gc);
+			replica->gc = NULL;
+		}
+		return 0;
+	}
+	return boxk(IPROTO_DELETE, BOX_GC_CONSUMERS_ID, "[%s]",
+		    tt_uuid_str(&replica->uuid));
+}
+
+static int
+box_gc_consumer_exists(struct replica *replica, bool *exists)
+{
+	if (!box_gc_consumer_is_persistent()) {
+		*exists = replica->gc != NULL;
+		return 0;
+	}
+
+	char key_buf[UUID_STR_LEN + 10];
+	char *key_end = key_buf;
+	key_end = mp_encode_array(key_end, 1);
+	key_end = mp_encode_str0(key_end, tt_uuid_str(&replica->uuid));
+	assert((unsigned long)(key_end - key_buf) < sizeof(key_buf));
+
+	struct tuple *res;
+	if (box_index_get(BOX_GC_CONSUMERS_ID, 0, key_buf, key_end, &res) != 0)
+		return -1;
+	*exists = res != NULL;
+	return 0;		
+}
+
+int
+box_gc_consumer_update(struct replica *replica, const struct vclock *vclock)
+{
+	assert(in_txn() == NULL);
+	struct txn *txn = txn_begin();
+	if (txn == NULL)
+		return -1;
+	auto txn_guard = make_scoped_guard([&]() { txn_abort(txn); });
+
+	bool has_consumer = false;
+	if (box_gc_consumer_exists(replica, &has_consumer) != 0)
+		return -1;
+	if (has_consumer && box_gc_consumer_set(replica, vclock, false) != 0)
+		return -1;
+	txn_guard.is_active = false;
+	return txn_commit(txn);
+}
+
 
 /** Fill _schema space with initial data on bootstrap. */
 static void
@@ -5568,6 +5712,9 @@ box_cfg_xc(void)
 	 */
 	gc_delay_unref();
 
+	gc_delay_unref();
+
+
 	bootstrap_journal_guard.is_active = false;
 	assert(current_journal != &bootstrap_journal);
 
@@ -5970,6 +6117,7 @@ box_storage_init(void)
 	rmean_error = rmean_new(rmean_error_strings, RMEAN_ERROR_LAST);
 
 	gc_init(on_garbage_collection);
+	gc_delay_ref();
 	engine_init();
 	schema_init();
 	replication_init(cfg_geti_default("replication_threads", 1));

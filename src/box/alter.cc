@@ -61,6 +61,7 @@
 #include "authentication.h"
 #include "node_name.h"
 #include "core/func_adapter.h"
+#include "gc.h"
 
 /* {{{ Auxiliary functions and methods. */
 
@@ -4395,6 +4396,173 @@ on_replace_dd_schema(struct trigger * /* trigger */, void *event)
 	return 0;
 }
 
+/** GC consumer definition. */
+struct gc_consumer_def {
+	/** Instance UUID. */
+	struct tt_uuid uuid;
+	/** Instance vclock. */
+	struct vclock vclock;
+	/** See gc_consumer::with_snap. */
+	bool with_snap;
+};
+
+/** Mapping from tuple.opts to fields of gc_consumer_def. */
+const struct opt_def gc_consumer_def_opts_reg[] = {
+	OPT_DEF("with_snap", OPT_BOOL, struct gc_consumer_def, with_snap),
+	OPT_END,
+};
+
+/**
+ * Fill gc_consumer_def with opts from the MsgPack map.
+ * Argument map can be NULL - default options are set in this case.
+ */
+static int
+gc_consumer_def_opts_decode(struct gc_consumer_def *def, const char *map,
+			    struct region *region)
+{
+	def->with_snap = false;
+	if (map == NULL)
+		return 0;
+	return opts_decode(def, gc_consumer_def_opts_reg, &map, region);
+}
+
+/** Build gc_consumer definition from a _gc_consumers' tuple. */
+static struct gc_consumer_def *
+gc_consumer_def_new_from_tuple(struct tuple *tuple, struct region *region)
+{
+	struct gc_consumer_def *def = xregion_alloc_object(region, typeof(*def));
+	memset(def, 0, sizeof(*def));
+	if (tuple_field_uuid(tuple, BOX_GC_CONSUMERS_FIELD_UUID, &def->uuid) != 0)
+		return NULL;
+	if (tt_uuid_is_nil(&def->uuid)) {
+		diag_set(ClientError, ER_INVALID_UUID, tt_uuid_str(&def->uuid));
+		return NULL;
+	}
+	const char *mp_vclock =
+		tuple_field_with_type(tuple, BOX_GC_CONSUMERS_FIELD_VCLOCK,
+				      MP_MAP);
+	if (mp_vclock == NULL)
+		return NULL;
+	if (mp_decode_vclock_ignore0(&mp_vclock, &def->vclock) != 0)
+		return NULL;
+	const char *opts = NULL;
+	if (tuple_field(tuple, BOX_GC_CONSUMERS_FIELD_OPTS) != NULL) {
+		opts = tuple_field_with_type(tuple, BOX_GC_CONSUMERS_FIELD_OPTS,
+					     MP_MAP);
+	}
+	if (gc_consumer_def_opts_decode(def, opts, region) != 0)
+		return NULL;
+	return def;
+}
+
+/**
+ * Data passed to on_rollback triggers of replace in _gc_consumers.
+ */
+struct gc_consumers_on_rollback_data {
+	/*
+	 * Replica that the gc_consumer belongs to.
+	 */
+	struct replica *replica;
+	/*
+	 * Replica UUID - is used to check if the replica is still registered.
+	 */
+	struct tt_uuid uuid;
+	/*
+	 * New GC consumer, will be unregistered on rollback.
+	 */
+	struct gc_consumer *new_gc;
+	/*
+	 * Old GC consumer of the replica, will be set back on rollback.
+	 */
+	struct gc_consumer *old_gc;
+};
+
+static int
+gc_consumers_rollback_insert(struct trigger *trigger, void *)
+{
+	struct gc_consumers_on_rollback_data *data =
+		(struct gc_consumers_on_rollback_data *)trigger->data;
+	struct tt_uuid *uuid = &data->uuid;
+	/* Set old GC only if the replica is still registered. */
+	if (replica_by_uuid(uuid) == data->replica)
+		data->replica->gc = data->old_gc;
+	gc_consumer_unregister(data->new_gc);
+	return 0;
+}
+
+static int
+gc_consumers_commit_delete(struct trigger *trigger, void *)
+{
+	struct gc_consumer *gc = (struct gc_consumer *)trigger->data;
+	gc_consumer_unregister(gc);
+	return 0;
+}
+
+static int
+on_replace_dd_gc_consumers(struct trigger * /* trigger */, void *event)
+{
+	struct txn *txn = (struct txn *)event;
+	RegionGuard region_guard(&fiber()->gc);
+	struct txn_stmt *stmt = txn_current_stmt(txn);
+	struct tuple *old_tuple = stmt->old_tuple;
+	struct tuple *new_tuple = stmt->new_tuple;
+	struct gc_consumer_def *old_def = NULL;
+	struct gc_consumer_def *new_def = NULL;
+	struct tt_uuid *replica_uuid = NULL;
+	if (old_tuple != NULL) {
+		old_def =
+			gc_consumer_def_new_from_tuple(old_tuple, &fiber()->gc);
+		if (old_def == NULL)
+			return -1;
+		replica_uuid = &old_def->uuid;
+	}
+	if (new_tuple != NULL) {
+		new_def =
+			gc_consumer_def_new_from_tuple(new_tuple, &fiber()->gc);
+		if (new_def == NULL)
+			return -1;
+		replica_uuid = &new_def->uuid;
+	}
+	struct replica *replica = replica_by_uuid(replica_uuid);
+	if (replica == NULL) {
+		diag_set(ClientError, ER_UNSUPPORTED, "gc_consumer",
+			 "manipulations without replica");
+		return -1;
+	}
+
+	if (old_tuple != NULL) {
+		/* Drop old conumser on commit. */
+		if (replica->gc == NULL)
+			panic("Replica unexpectedly has no gc consumer "
+			      "on delete in _gc_consumers");
+		assert(vclock_compare(&replica->gc->vclock, &old_def->vclock) == 0);
+		struct trigger *on_commit =
+			txn_alter_trigger_new(gc_consumers_commit_delete,
+					      replica->gc);
+		txn_stmt_on_commit(stmt, on_commit);
+	}
+	if (new_tuple != NULL) {
+		/* Create new consumer and set it to the replica. */
+		struct gc_consumers_on_rollback_data *on_rollback_data =
+			xregion_alloc_object(
+				&in_txn()->region,
+				struct gc_consumers_on_rollback_data);
+		on_rollback_data->replica = replica;
+		on_rollback_data->old_gc = replica->gc;
+		on_rollback_data->uuid = *replica_uuid;
+		replica->gc = gc_consumer_register(&new_def->vclock,
+						   new_def->with_snap,
+						   "replica %s",
+						   tt_uuid_str(replica_uuid));
+		on_rollback_data->new_gc = replica->gc;
+		struct trigger *on_rollback =
+			txn_alter_trigger_new(gc_consumers_rollback_insert,
+					      on_rollback_data);
+		txn_stmt_on_rollback(stmt, on_rollback);
+	}
+	return 0;
+}
+
 /** Unregister the replica affected by the change. */
 static int
 on_replace_cluster_clear_id(struct trigger *trigger, void * /* event */)
@@ -4583,6 +4751,12 @@ on_replace_dd_cluster_update(const struct replica_def *old_def,
 				 "own UUID update in _cluster");
 			return -1;
 		}
+		/*
+		 * Drop gc_consumer for the replaced replica. Consumer
+		 * for the new one will be created on join/subscribe.
+		 */
+		if (box_gc_consumer_unregister(replica) != 0)
+			return -1;
 		if (on_replace_dd_cluster_set_uuid(replica, new_def) != 0)
 			return -1;
 		/* The replica was re-created. */
@@ -4670,6 +4844,9 @@ on_replace_dd_cluster_delete(const struct replica_def *old_def)
 		      "internally - %s", old_def->id,
 		      tt_uuid_str(&old_def->uuid), tt_uuid_str(&replica->uuid));
 	}
+	/* Unregister gc consumer of the replica. */
+	if (box_gc_consumer_unregister(replica) != 0)
+		return -1;
 	/*
 	 * Unregister only after commit. Otherwise if the transaction would be
 	 * rolled back, there might be already another replica taken the freed
@@ -5541,4 +5718,5 @@ TRIGGER(on_replace_sequence_data, on_replace_dd_sequence_data);
 TRIGGER(on_replace_space_sequence, on_replace_dd_space_sequence);
 TRIGGER(on_replace_trigger, on_replace_dd_trigger);
 TRIGGER(on_replace_func_index, on_replace_dd_func_index);
+TRIGGER(on_replace_gc_consumers, on_replace_dd_gc_consumers);
 /* vim: set foldmethod=marker */

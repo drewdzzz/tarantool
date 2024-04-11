@@ -630,14 +630,36 @@ tx_status_update(struct cmsg *msg)
 	cpipe_push(&status->relay->relay_pipe, msg);
 }
 
+#include "session.h"
+
 /**
  * Update replica gc state in tx thread.
+ * Note that there is a case when replica and its consumer were
+ * dropped, but the relay is not stopped yet - we must not create
+ * new gc consumer in this case, because it will hold all xlogs.
+ * So the function tries to update gc_consumer only if the replica
+ * is still in replicaset. The consumer is not created if it doesn't
+ * exist.
  */
 static void
 tx_gc_advance(struct cmsg *msg)
 {
 	struct relay_gc_msg *m = (struct relay_gc_msg *)msg;
-	gc_consumer_advance(m->relay->replica->gc, &m->vclock);
+	struct replica *replica = m->relay->replica;
+	struct credentials *old_user = effective_user();
+
+	/* Do not update consumer if it belongs to another replica. */
+	if (replica_by_uuid(&replica->uuid) != replica)
+		goto free_msg;
+
+	fiber_set_user(fiber(), &admin_credentials);
+	if (box_gc_consumer_update(m->relay->replica, &m->vclock) != 0) {
+		say_error("Cannot advance gc consumer for replica %u",
+			  m->relay->replica->id);
+		diag_log();
+	}
+	fiber_set_user(fiber(), old_user);
+free_msg:
 	free(m);
 }
 
@@ -1081,23 +1103,16 @@ relay_subscribe(struct replica *replica, struct iostream *io, uint64_t sync,
 	assert(relay->state != RELAY_FOLLOW);
 	/*
 	 * Register the replica with the garbage collector.
-	 * In case some of the replica's WAL files were deleted, it might
-	 * subscribe with a smaller vclock than the master remembers, so
-	 * recreate the gc consumer unconditionally to make sure it holds
-	 * the correct vclock.
+	 * 
+	 * We cannot persist the consumer here since it can lead to deadlock:
+	 * the operation won't be committed until previous transactions from
+	 * the journal are replicated(?).
 	 */
-	if (!replica->anon) {
-		bool had_gc = false;
-		if (replica->gc != NULL) {
-			gc_consumer_unregister(replica->gc);
-			had_gc = true;
-		}
-		replica->gc = gc_consumer_register(replica_clock, "replica %s",
-						   tt_uuid_str(&replica->uuid));
-		if (replica->gc == NULL)
-			diag_raise();
-		if (!had_gc)
-			gc_delay_unref();
+	if (!replica->anon &&
+	    box_gc_consumer_set_async(replica, replica_clock, false) != 0) {
+		say_error("Cannot modify gc consumer for replica %u",
+			  replica->id);
+		diag_raise();
 	}
 
 	if (replica_version_id < version_id(2, 6, 0) || replica->anon)
@@ -1123,8 +1138,10 @@ relay_subscribe(struct replica *replica, struct iostream *io, uint64_t sync,
 
 	struct cord cord;
 	int rc = cord_costart(&cord, "subscribe", relay_subscribe_f, relay);
-	if (rc == 0)
-		rc = cord_cojoin(&cord);
+	if (rc != 0)
+		diag_raise();
+
+	rc = cord_cojoin(&cord);
 	if (rc != 0)
 		diag_raise();
 }
