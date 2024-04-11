@@ -4389,16 +4389,21 @@ box_process_register(struct iostream *io, const struct xrow_header *header)
 	}
 
 	/* @sa box_process_subscribe(). */
-	vclock_reset(&req.vclock, 0, vclock_get(&replicaset.vclock, 0));
-	struct gc_consumer *gc = gc_consumer_register(
-		&req.vclock, "replica %s", tt_uuid_str(&req.instance_uuid));
-	if (gc == NULL)
-		diag_raise();
-	auto gc_guard = make_scoped_guard([&] { gc_consumer_unregister(gc); });
-
 	say_info("registering replica %s at %s",
 		 tt_uuid_str(&req.instance_uuid), sio_socketname(io->fd));
+	
+	if (box_txn_begin() != 0)
+		return;
+	auto txn_guard = make_scoped_guard([&] {
+		if (box_txn_rollback() != 0)
+			panic("Cannot rollback txn in subscribe");
+	});
 	box_register_replica(&req.instance_uuid, req.instance_name);
+	if (box_gc_consumer_register(replica, &req.vclock, false) != 0)
+		tnt_raise(ClientError, ER_CANNOT_REGISTER);
+	txn_guard.is_active = false;
+	if (box_txn_commit() != 0)
+		tnt_raise(ClientError, ER_CANNOT_REGISTER);
 
 	ERROR_INJECT_YIELD(ERRINJ_REPLICA_JOIN_DELAY);
 
@@ -4429,11 +4434,7 @@ box_process_register(struct iostream *io, const struct xrow_header *header)
 	 * registration was complete and assign it to the
 	 * replica.
 	 */
-	gc_consumer_advance(gc, &stop_vclock);
-	if (replica->gc != NULL)
-		gc_consumer_unregister(replica->gc);
-	replica->gc = gc;
-	gc_guard.is_active = false;
+	box_gc_consumer_advance(replica, &stop_vclock);
 }
 
 void
@@ -4532,15 +4533,24 @@ box_process_join(struct iostream *io, const struct xrow_header *header)
 				  tt_uuid_str(&other->uuid));
 		}
 	}
+
 	/*
 	 * Register the replica as a WAL consumer so that
 	 * it can resume FINAL JOIN where INITIAL JOIN ends.
 	 */
-	struct gc_consumer *gc = gc_consumer_register(&replicaset.vclock,
-				"replica %s", tt_uuid_str(&req.instance_uuid));
-	if (gc == NULL)
-		diag_raise();
-	auto gc_guard = make_scoped_guard([&] { gc_consumer_unregister(gc); });
+	struct gc_consumer *gc = NULL;
+	bool is_rejoin = replica != NULL;
+	if (is_rejoin) {
+		box_gc_consumer_advance(replica, &replicaset.vclock);
+	} else {
+
+		gc = gc_consumer_register(&replicaset.vclock, false,
+					  "replica %s join",
+					  tt_uuid_str(&req.instance_uuid));
+		if (gc == NULL)
+			diag_raise();
+	}
+	auto gc_guard = make_scoped_guard([&] { if (gc != NULL) gc_consumer_unregister(gc); });
 
 	say_info("joining replica %s at %s",
 		 tt_uuid_str(&req.instance_uuid), sio_socketname(io->fd));
@@ -4555,13 +4565,28 @@ box_process_join(struct iostream *io, const struct xrow_header *header)
 	 * Register the replica after sending the last row but before sending
 	 * OK - if the registration fails, the error reaches the client.
 	 */
+
+	if (box_txn_begin() != 0)
+		return;
+	auto txn_guard = make_scoped_guard([&] {
+		if (box_txn_rollback() != 0)
+			panic("Cannot rollback txn in join");
+	});
 	box_register_replica(&req.instance_uuid, req.instance_name);
-
-	ERROR_INJECT_YIELD(ERRINJ_REPLICA_JOIN_DELAY);
-
 	replica = replica_by_uuid(&req.instance_uuid);
 	if (replica == NULL)
 		tnt_raise(ClientError, ER_CANNOT_REGISTER);
+	if (!is_rejoin) {
+		if (box_gc_consumer_register(replica, &gc->vclock, false) != 0)
+			tnt_raise(ClientError, ER_CANNOT_REGISTER);
+		gc_consumer_unregister(gc);
+		gc = NULL;
+	}
+	txn_guard.is_active = false;
+	if (box_txn_commit() != 0)
+		tnt_raise(ClientError, ER_CANNOT_REGISTER);
+
+	ERROR_INJECT_YIELD(ERRINJ_REPLICA_JOIN_DELAY);
 
 	/* Remember master's vclock after the last request */
 	struct vclock stop_vclock;
@@ -4586,15 +4611,12 @@ box_process_join(struct iostream *io, const struct xrow_header *header)
 	row.sync = header->sync;
 	coio_write_xrow(io, &row);
 
+
 	/*
 	 * Advance the WAL consumer state to the position where
 	 * FINAL JOIN ended and assign it to the replica.
 	 */
-	gc_consumer_advance(gc, &stop_vclock);
-	if (replica->gc != NULL)
-		gc_consumer_unregister(replica->gc);
-	replica->gc = gc;
-	gc_guard.is_active = false;
+	box_gc_consumer_advance(replica, &stop_vclock);
 }
 
 void
@@ -4809,6 +4831,73 @@ box_process_vote(struct ballot *ballot)
 	assert(i < VCLOCK_MAX);
 
 	ballot->registered_replica_uuids_size = i;
+}
+
+int
+box_gc_consumer_register(struct replica *replica, const struct vclock *vclock,
+			 bool with_snap)
+{
+	char key_buf[UUID_STR_LEN + 10];
+	char *key_end = key_buf;
+	key_end = mp_encode_array(key_end, 1);
+	key_end = mp_encode_str0(key_end, tt_uuid_str(&replica->uuid));
+	assert((unsigned long)(key_end - key_buf) < sizeof(key_buf));
+
+	struct tuple *res;
+	if (box_index_get(BOX_GC_CONSUMERS_ID, 0, key_buf, key_end, &res) != 0)
+		return -1;
+	/* Return if already have a consumer. */
+	if (res != NULL)
+		return 0;
+
+	char tuple_buf[VCLOCK_STR_LEN_MAX + UUID_STR_LEN];
+	char *data = tuple_buf;
+	data = mp_encode_array(data, 3);
+	data = mp_encode_str0(data, tt_uuid_str(&replica->uuid));
+	data = mp_encode_vclock_ignore0(data, vclock);
+	
+	size_t opts_size = 0;
+	if (with_snap)
+		opts_size++;
+
+	data = mp_encode_map(data, opts_size);
+	if (with_snap) {
+		data = mp_encode_str0(data, "with_snap");
+		data = mp_encode_bool(data, true);
+	}
+	assert((size_t)(data - tuple_buf) < sizeof(tuple_buf));
+
+	return box_replace(BOX_GC_CONSUMERS_ID, tuple_buf, data, NULL);
+}
+
+int
+box_gc_consumer_advance(struct replica *replica, const struct vclock *vclock)
+{
+	char ops_buf[VCLOCK_STR_LEN_MAX + 20];
+	char *data = ops_buf;
+	data = mp_encode_array(data, 1);
+	data = mp_encode_array(data, 3);
+	data = mp_encode_str0(data, "=");
+	data = mp_encode_uint(data, 1);
+	data = mp_encode_vclock_ignore0(data, vclock);
+	const char *ops_end = data;
+	assert((size_t)(data - ops_buf) < sizeof(ops_buf));
+
+	char key[UUID_STR_LEN + 10];
+	data = key;
+	data = mp_encode_array(data, 1);
+	data = mp_encode_str0(data, tt_uuid_str(&replica->uuid));
+	const char *key_end = data;
+
+	return box_update(BOX_GC_CONSUMERS_ID, 0, key, key_end,
+			  ops_buf, ops_end, 0, NULL);
+}
+
+int
+box_gc_consumer_unregister(struct replica *replica)
+{
+	return boxk(IPROTO_DELETE, BOX_GC_CONSUMERS_ID, "[%s]",
+		    tt_uuid_str(&replica->uuid));
 }
 
 /** Fill _schema space with initial data on bootstrap. */
@@ -5559,6 +5648,9 @@ box_cfg_xc(void)
 	 */
 	vclock_copy(&replicaset.applier.vclock, &replicaset.vclock);
 
+	/* Unref GC after recovery. */
+	gc_delay_unref();
+
 	/*
 	 * Exclude self from GC delay because we care
 	 * about remote replicas only, still for ref/unref
@@ -5970,6 +6062,7 @@ box_storage_init(void)
 	rmean_error = rmean_new(rmean_error_strings, RMEAN_ERROR_LAST);
 
 	gc_init(on_garbage_collection);
+	gc_delay_ref();
 	engine_init();
 	schema_init();
 	replication_init(cfg_geti_default("replication_threads", 1));

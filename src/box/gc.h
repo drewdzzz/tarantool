@@ -97,6 +97,8 @@ struct gc_consumer {
 	 * deleted by the WAL thread on ENOSPC.
 	 */
 	bool is_inactive;
+	/** This flag is set if the consumer tracks snapshot. */
+	bool with_snap;
 };
 
 typedef rb_tree(struct gc_consumer) gc_tree_t;
@@ -342,9 +344,10 @@ gc_unref_checkpoint(struct gc_checkpoint_ref *ref);
  * Returns a pointer to the new consumer object or NULL on
  * memory allocation failure.
  */
-CFORMAT(printf, 2, 3)
+CFORMAT(printf, 3, 4)
 struct gc_consumer *
-gc_consumer_register(const struct vclock *vclock, const char *format, ...);
+gc_consumer_register(const struct vclock *vclock, bool with_snap,
+		     const char *format, ...);
 
 /**
  * Unregister a consumer and invoke garbage collection
@@ -359,6 +362,12 @@ gc_consumer_unregister(struct gc_consumer *consumer);
  */
 void
 gc_consumer_advance(struct gc_consumer *consumer, const struct vclock *vclock);
+
+static inline void
+gc_consumer_release_snap(struct gc_consumer *consumer)
+{
+	consumer->with_snap = false;
+}
 
 /**
  * Iterator over registered consumers. The iterator is valid
@@ -382,6 +391,18 @@ gc_consumer_iterator_init(struct gc_consumer_iterator *it)
  */
 struct gc_consumer *
 gc_consumer_iterator_next(struct gc_consumer_iterator *it);
+
+struct replica;
+
+int
+box_gc_consumer_register(struct replica *replica, const struct vclock *vclock,
+			 bool with_snap);
+
+int
+box_gc_consumer_advance(struct replica *replica, const struct vclock *vclock);
+
+int
+box_gc_consumer_unregister(struct replica *replica);
 
 #if defined(__cplusplus)
 } /* extern "C" */

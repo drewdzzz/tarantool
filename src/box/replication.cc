@@ -361,16 +361,9 @@ replica_set_id(struct replica *replica, uint32_t replica_id)
 		assert(instance_id == REPLICA_ID_NIL);
 		instance_id = replica_id;
 		box_broadcast_id();
-	} else if (replica->anon) {
-		/*
-		 * Set replica gc on its transition from
-		 * anonymous to a normal one.
-		 */
-		assert(replica->gc == NULL);
-		replica->gc = gc_consumer_register(&replicaset.vclock,
-						   "replica %s",
-						   tt_uuid_str(&replica->uuid));
 	}
+	/* GC should be set by replace in _gc_consumers. */
+	// assert(replica->gc != NULL);
 	replicaset.replica_by_id[replica_id] = replica;
 	gc_delay_ref();
 	++replicaset.registered_count;

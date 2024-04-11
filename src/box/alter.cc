@@ -60,6 +60,7 @@
 #include "box.h"
 #include "authentication.h"
 #include "node_name.h"
+#include "gc.h"
 
 /* {{{ Auxiliary functions and methods. */
 
@@ -4337,6 +4338,132 @@ on_replace_dd_schema(struct trigger * /* trigger */, void *event)
 	return 0;
 }
 
+/** GC consumer definition. */
+struct gc_consumer_def {
+	/** Instance UUID. */
+	struct tt_uuid uuid;
+	/** Instance vclock. */
+	struct vclock vclock;
+	/** See gc_consumer::with_snap. */
+	bool with_snap;
+};
+
+const struct opt_def gc_consumer_opts_reg[] = {
+	OPT_DEF("with_snap", OPT_BOOL, struct gc_consumer_def, with_snap),
+	OPT_END,
+};
+
+/**
+ * Fill space opts from the msgpack stream (MP_MAP field in the
+ * tuple).
+ */
+static int
+gc_consumer_opts_decode(struct gc_consumer_def *def, const char *map,
+			struct region *region)
+{
+	def->with_snap = false;
+	return opts_decode(def, gc_consumer_opts_reg, &map, region);
+}
+
+/** Build gc_consumer definition from a _gc_consumers' tuple. */
+static struct gc_consumer_def *
+gc_consumer_def_new_from_tuple(struct tuple *tuple, struct region *region)
+{
+	struct gc_consumer_def *def = xregion_alloc_object(region, typeof(*def));
+	memset(def, 0, sizeof(*def));
+	if (tuple_field_uuid(tuple, BOX_GC_CONSUMERS_FIELD_UUID, &def->uuid) != 0)
+		return NULL;
+	if (tt_uuid_is_nil(&def->uuid)) {
+		diag_set(ClientError, ER_INVALID_UUID, tt_uuid_str(&def->uuid));
+		return NULL;
+	}
+	const char *mp_vclock =
+		tuple_field_with_type(tuple, BOX_GC_CONSUMERS_FIELD_VCLOCK,
+				      MP_MAP);
+	if (mp_vclock == NULL)
+		return NULL;
+	if (mp_decode_vclock_ignore0(&mp_vclock, &def->vclock) != 0)
+		return NULL;
+	const char *opts =
+		tuple_field_with_type(tuple, BOX_GC_CONSUMERS_FIELD_OPTS,
+				      MP_MAP);
+	if (gc_consumer_opts_decode(def, opts, region) != 0)
+		return NULL;
+	return def;
+}
+
+/**
+ * TODO: on_commit/rollback triggers???
+ * Variant: use gc_delay_ref here and gc_delay_unref in commit/rollback.
+ */
+static int
+on_replace_dd_gc_consumers(struct trigger * /* trigger */, void *event)
+{
+	struct txn *txn = (struct txn *)event;
+	RegionGuard region_guard(&fiber()->gc);
+	struct txn_stmt *stmt = txn_current_stmt(txn);
+	struct tuple *old_tuple = stmt->old_tuple;
+	struct tuple *new_tuple = stmt->new_tuple;
+	if (new_tuple != NULL && old_tuple == NULL) {
+		/* INSERT */
+		struct gc_consumer_def *def =
+			gc_consumer_def_new_from_tuple(new_tuple, &fiber()->gc);
+		struct replica *replica = replica_by_uuid(&def->uuid);
+		if (replica == NULL) {
+			diag_set(ClientError, ER_UNSUPPORTED, "gc_consumer",
+				 "creation without replica");
+			return -1;
+		}
+		struct gc_consumer *old_consumer = replica->gc;
+		replica->gc = gc_consumer_register(&def->vclock, false,
+						   "replica %s",
+						   tt_uuid_str(&def->uuid));
+		if (old_consumer != NULL)
+			gc_consumer_unregister(old_consumer);
+	} else if (new_tuple == NULL && old_tuple != NULL) {
+		/* DELETE */
+		struct gc_consumer_def *def =
+			gc_consumer_def_new_from_tuple(old_tuple, &fiber()->gc);
+		struct replica *replica = replica_by_uuid(&def->uuid);
+		if (replica == NULL) {
+			diag_set(ClientError, ER_UNSUPPORTED, "gc_consumer",
+				 "deletion without replica");
+			return -1;
+		}
+		if (replica->gc == NULL) {
+			say_crit("Replica %s does not have a gc consumer - "
+				 "it is unexpected", tt_uuid_str(&def->uuid));
+		} else {
+			gc_consumer_unregister(replica->gc);
+		}
+	} else {
+		/* UPDATE */
+		assert(new_tuple != NULL && old_tuple != NULL);
+		struct gc_consumer_def *old_def =
+			gc_consumer_def_new_from_tuple(old_tuple, &fiber()->gc);
+		struct gc_consumer_def *def =
+			gc_consumer_def_new_from_tuple(new_tuple, &fiber()->gc);
+		struct replica *replica = replica_by_uuid(&def->uuid);
+		if (replica == NULL) {
+			diag_set(ClientError, ER_UNSUPPORTED, "gc_consumer",
+				 "updating without replica");
+			return -1;
+		}
+
+		/* Make a transition 'with_snap' -> 'not with_snap'. */
+		if (def->with_snap) {
+			diag_set(ClientError, ER_UNSUPPORTED, "gc_consumer",
+				 "transition to 'with_snap' state");
+			return -1;
+		}
+		if (old_def->with_snap)
+			gc_consumer_release_snap(replica->gc);
+
+		gc_consumer_advance(replica->gc, &def->vclock);
+	}
+	return 0;
+}
+
 /** Unregister the replica affected by the change. */
 static int
 on_replace_cluster_clear_id(struct trigger *trigger, void * /* event */)
@@ -4525,6 +4652,7 @@ on_replace_dd_cluster_update(const struct replica_def *old_def,
 				 "own UUID update in _cluster");
 			return -1;
 		}
+		/* TODO: deal with consumers. */
 		if (on_replace_dd_cluster_set_uuid(replica, new_def) != 0)
 			return -1;
 		/* The replica was re-created. */
@@ -4567,7 +4695,8 @@ on_replace_dd_cluster_insert(const struct replica_def *new_def)
 	/*
 	 * Register the replica before commit so as to occupy the replica ID
 	 * now. While WAL write is in progress, new replicas might come, they
-	 * should see the ID is already in use.
+	 * should see the ID is already in use. Also, _gc_consumers space relies
+	 * on the fact that on its replace replica will be in replicaset.
 	 */
 	replica = replica_by_uuid(&new_def->uuid);
 	if (replica != NULL)
@@ -4612,10 +4741,14 @@ on_replace_dd_cluster_delete(const struct replica_def *old_def)
 		      "internally - %s", old_def->id,
 		      tt_uuid_str(&old_def->uuid), tt_uuid_str(&replica->uuid));
 	}
+	if (box_gc_consumer_unregister(replica) != 0)
+		return -1;
 	/*
 	 * Unregister only after commit. Otherwise if the transaction would be
 	 * rolled back, there might be already another replica taken the freed
 	 * ID.
+	 * Also, space _gc_consumers relies on the fact that the replica is
+	 * registered when we are dropping its gc consumer.
 	 */
 	struct trigger *on_commit = txn_alter_trigger_new(
 		on_replace_cluster_clear_id, replica);
@@ -5483,4 +5616,5 @@ TRIGGER(on_replace_sequence_data, on_replace_dd_sequence_data);
 TRIGGER(on_replace_space_sequence, on_replace_dd_space_sequence);
 TRIGGER(on_replace_trigger, on_replace_dd_trigger);
 TRIGGER(on_replace_func_index, on_replace_dd_func_index);
+TRIGGER(on_replace_gc_consumers, on_replace_dd_gc_consumers);
 /* vim: set foldmethod=marker */

@@ -637,7 +637,7 @@ static void
 tx_gc_advance(struct cmsg *msg)
 {
 	struct relay_gc_msg *m = (struct relay_gc_msg *)msg;
-	gc_consumer_advance(m->relay->replica->gc, &m->vclock);
+	box_gc_consumer_advance(m->relay->replica, &m->vclock);
 	free(m);
 }
 
@@ -1083,19 +1083,12 @@ relay_subscribe(struct replica *replica, struct iostream *io, uint64_t sync,
 	 * Register the replica with the garbage collector.
 	 * In case some of the replica's WAL files were deleted, it might
 	 * subscribe with a smaller vclock than the master remembers, so
-	 * recreate the gc consumer unconditionally to make sure it holds
-	 * the correct vclock.
+	 * advance consumer unconditionally (it's allowed to go back).
 	 */
 	if (!replica->anon) {
-		bool had_gc = false;
-		if (replica->gc != NULL) {
-			gc_consumer_unregister(replica->gc);
-			had_gc = true;
-		}
-		replica->gc = gc_consumer_register(replica_clock, "replica %s",
-						   tt_uuid_str(&replica->uuid));
-		if (replica->gc == NULL)
-			diag_raise();
+		bool had_gc = replica->gc == NULL;
+		box_gc_consumer_advance(replica, replica_clock);
+		/* Unref delay if gc was not set. */
 		if (!had_gc)
 			gc_delay_unref();
 	}

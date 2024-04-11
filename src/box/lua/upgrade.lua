@@ -1399,6 +1399,27 @@ local function upgrade_to_3_0_0()
     add_instance_names()
 end
 
+local function create_persistent_gc_state()
+    local _space = box.space[box.schema.SPACE_ID]
+    local _index = box.space[box.schema.INDEX_ID]
+    local space_id = box.schema.GC_CONSUMERS_ID
+    local opts = {group_id = 1}
+
+    log.info("create space _gc_consumers")
+    local format = {{name = 'uuid', type = 'string'},
+                    {name = 'vclock', type = 'map'},
+                    {name = 'opts', type = 'map'}}
+    _space:insert{space_id, ADMIN, '_gc_consumers', 'memtx', 0, opts, format}
+
+    log.info("create index primary on _gc_consumers")
+    _index:insert{space_id, 0, 'primary', 'tree', { unique = true },
+                  {{0, 'string'}}}
+end
+
+local function upgrade_to_3_2_0()
+    create_persistent_gc_state()
+end
+
 --------------------------------------------------------------------------------
 
 local handlers = {
@@ -1422,6 +1443,7 @@ local handlers = {
     {version = mkversion(2, 11, 0), func = upgrade_to_2_11_0},
     {version = mkversion(2, 11, 1), func = upgrade_to_2_11_1},
     {version = mkversion(3, 0, 0), func = upgrade_to_3_0_0},
+    {version = mkversion(3, 2, 0), func = upgrade_to_3_2_0},
 }
 builtin.box_init_latest_dd_version_id(handlers[#handlers].version.id)
 
@@ -2137,7 +2159,9 @@ end
 box.schema.downgrade_issues = function(version)
     return downgrade_impl(version, true)
 end
-box.internal.bootstrap = bootstrap;
+box.internal.bootstrap = function()
+    run_upgrade(bootstrap)
+end
 box.internal.schema_needs_upgrade = builtin.box_schema_needs_upgrade
 box.internal.get_snapshot_version = get_snapshot_version;
 box.internal.set_recovery_triggers = set_recovery_triggers;

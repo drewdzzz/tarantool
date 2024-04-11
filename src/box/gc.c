@@ -273,40 +273,8 @@ gc_cleanup_fiber_f(va_list ap)
 	 * up with cleanup disabled lets do wait in a
 	 * separate cycle to minimize branching on stage 2.
 	 */
-	if (gc.is_paused) {
-		double start_time = fiber_clock();
-		double timeout = gc.wal_cleanup_delay;
-		while (!fiber_is_cancelled()) {
-			if (fiber_yield_timeout(timeout)) {
-				say_info("wal/engine cleanup is resumed "
-					 "due to timeout expiration");
-				gc.is_paused = false;
-				gc.delay_ref = 0;
-				break;
-			}
-
-			/*
-			 * If a last reference is dropped
-			 * we can exit out early.
-			 */
-			if (!gc.is_paused) {
-				say_info("wal/engine cleanup is resumed");
-				break;
-			}
-
-			/*
-			 * Woken up to update the timeout.
-			 */
-			double elapsed = fiber_clock() - start_time;
-			if (elapsed >= gc.wal_cleanup_delay) {
-				say_info("wal/engine cleanup is resumed "
-					 "due to timeout manual update");
-				gc.is_paused = false;
-				gc.delay_ref = 0;
-				break;
-			}
-			timeout = gc.wal_cleanup_delay - elapsed;
-		}
+	while (gc.is_paused && !fiber_is_cancelled()) {
+		fiber_sleep(0);
 	}
 
 	/*
@@ -662,7 +630,8 @@ gc_unref_checkpoint(struct gc_checkpoint_ref *ref)
 }
 
 struct gc_consumer *
-gc_consumer_register(const struct vclock *vclock, const char *format, ...)
+gc_consumer_register(const struct vclock *vclock, bool with_snap,
+		     const char *format, ...)
 {
 	struct gc_consumer *consumer = calloc(1, sizeof(*consumer));
 	if (consumer == NULL) {
@@ -676,6 +645,7 @@ gc_consumer_register(const struct vclock *vclock, const char *format, ...)
 	vsnprintf(consumer->name, GC_NAME_MAX, format, ap);
 	va_end(ap);
 
+	consumer->with_snap = with_snap;
 	vclock_copy(&consumer->vclock, vclock);
 	gc_tree_insert(&gc.consumers, consumer);
 	return consumer;
@@ -699,18 +669,23 @@ gc_consumer_advance(struct gc_consumer *consumer, const struct vclock *vclock)
 
 	int64_t signature = vclock_sum(vclock);
 	int64_t prev_signature = vclock_sum(&consumer->vclock);
+	int dir = 1;
 
-	assert(signature >= prev_signature);
 	if (signature == prev_signature)
 		return; /* nothing to do */
+	else if (signature < prev_signature)
+		dir = -1;
 
 	/*
 	 * Do not update the tree unless the tree invariant
 	 * is violated.
 	 */
-	struct gc_consumer *next = gc_tree_next(&gc.consumers, consumer);
-	bool update_tree = (next != NULL &&
-			    vclock_lex_compare(vclock, &next->vclock) >= 0);
+	struct gc_consumer *next =
+		dir > 0 ? gc_tree_next(&gc.consumers, consumer) :
+			  gc_tree_prev(&gc.consumers, consumer);
+	bool update_tree =
+		next != NULL &&
+		dir * vclock_lex_compare(vclock, &next->vclock) >= 0;
 
 	if (update_tree)
 		gc_tree_remove(&gc.consumers, consumer);
@@ -720,7 +695,9 @@ gc_consumer_advance(struct gc_consumer *consumer, const struct vclock *vclock)
 	if (update_tree)
 		gc_tree_insert(&gc.consumers, consumer);
 
-	gc_schedule_cleanup();
+	/* Schedule cleanup if the consumer was advanced forward. */
+	if (dir > 0)
+		gc_schedule_cleanup();
 }
 
 struct gc_consumer *
