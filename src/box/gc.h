@@ -47,6 +47,8 @@ extern "C" {
 
 struct fiber;
 struct gc_consumer;
+struct replica;
+struct trigger;
 
 enum { GC_NAME_MAX = 64 };
 
@@ -89,15 +91,31 @@ struct gc_checkpoint_ref {
 struct gc_consumer {
 	/** Link in gc_state::consumers. */
 	gc_node_t node;
+	struct rlist in_all_consumers;
 	/** Human-readable name. */
 	char name[GC_NAME_MAX];
-	/** The vclock tracked by this consumer. */
+	/**
+	 * The vclock tracked by this consumer.
+	 * This vclock is consistent with persistent GC state.
+	 */
 	struct vclock vclock;
+	/**
+	 * Internal vclock used for asyncronous updates of consumers.
+	 * Value of `vclock` member (and persistent consumer as well)
+	 * is eventually updated to this value.
+	 */
+	struct vclock volatile_vclock;
+	/** Backlink to replica. */
+	struct replica *replica;
 	/**
 	 * This flag is set if a WAL needed by this consumer was
 	 * deleted by the WAL thread on ENOSPC.
 	 */
 	bool is_inactive;
+	/**
+	 * Is set when the consumer is marked for deletion.
+	 */
+	bool is_deleted;
 };
 
 typedef rb_tree(struct gc_consumer) gc_tree_t;
@@ -127,8 +145,24 @@ struct gc_state {
 	 * to the tail. Linked by gc_checkpoint::in_checkpoints.
 	 */
 	struct rlist checkpoints;
-	/** Registered consumers, linked by gc_consumer::node. */
+	/** Active registered consumers, linked by gc_consumer::node. */
 	gc_tree_t consumers;
+	/** All registered consumers. */
+	struct rlist all_consumers;
+	/** Fiber that persists consumers asynchronously. */
+	struct fiber *persist_fiber;
+	/**
+	 * The following two members are used for scheduling
+	 * background garbage collection and waiting for it to
+	 * complete. To trigger background garbage collection,
+	 * @scheduled is incremented. Whenever a round of garbage
+	 * collection completes, @completed is incremented. Thus
+	 * to wait for background garbage collection scheduled
+	 * at a particular moment of time to complete, one should
+	 * sleep until @completed reaches the value of @scheduled
+	 * taken at that moment of time.
+	 */
+	uint64_t persist_completed, persist_scheduled;
 	/** Fiber responsible for periodic checkpointing. */
 	struct fiber *checkpoint_fiber;
 	/** Schedule of periodic checkpoints. */
@@ -347,23 +381,24 @@ gc_unref_checkpoint(struct gc_checkpoint_ref *ref);
  * Returns a pointer to the new consumer object, never fails
  * (panics on memory allocation failure).
  */
-CFORMAT(printf, 2, 3)
+CFORMAT(printf, 3, 4)
 struct gc_consumer *
-gc_consumer_register(const struct vclock *vclock, const char *format, ...);
+gc_consumer_register_impl(struct replica *replica, const struct vclock *vclock,
+		    	  const char *format, ...);
 
 /**
  * Unregister a consumer and invoke garbage collection
  * if needed.
  */
 void
-gc_consumer_unregister(struct gc_consumer *consumer);
+gc_consumer_unregister_impl(struct gc_consumer *consumer);
 
 /**
- * Advance the vclock tracked by a consumer and
- * invoke garbage collection if needed.
+ * Unregister a consumer and invoke garbage collection
+ * if needed.
  */
-void
-gc_consumer_advance(struct gc_consumer *consumer, const struct vclock *vclock);
+int
+gc_consumer_unregister_sync(struct replica *replica);
 
 /**
  * Iterator over registered consumers. The iterator is valid
@@ -387,6 +422,50 @@ gc_consumer_iterator_init(struct gc_consumer_iterator *it)
  */
 struct gc_consumer *
 gc_consumer_iterator_next(struct gc_consumer_iterator *it);
+
+/**
+ * The function returns true iff current schema supports
+ * persistent gc consumers.
+ */
+bool
+gc_consumer_is_persistent(void);
+
+/**
+ * Synchronously register a consumer. When consumers are persistent, this
+ * function yields and waits while consumer is persisted (wait for commit).
+ */
+int
+gc_consumer_register_dummy_sync(struct replica *replica);
+
+/**
+ * The same as gc_consumer_advance_sync, but the transaction ignores limbo,
+ * hence doesn't wait for previous synchronous transactions to be committed.
+ * It can be useful in the cases when we want to synchronously update consumer,
+ * but we have not enough replicas to collect quorum.
+ */
+int
+gc_consumer_advance_sync(struct gc_consumer *consumer, const struct vclock *vclock);
+
+/**
+ * Asynchronously advance a consumer. It can be advanced back. The function does
+ * not yield or waits for anything. If asynchorouns advance fails, no retries
+ * are performed.
+ */
+void
+gc_consumer_advance(struct gc_consumer *consumer, const struct vclock *vclock);
+
+/**
+ * The trigger invoked on replace in space _gc_consumers.
+ */
+int
+on_replace_dd_gc_consumers(struct trigger *trigger, void *event);
+
+/**
+ * A callback that should be invoked when the primary index of space
+ * _gc_consumers is created.
+ */
+int
+on_create_dd_gc_consumers_primary_index(void);
 
 #if defined(__cplusplus)
 } /* extern "C" */

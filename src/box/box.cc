@@ -4266,6 +4266,23 @@ box_register_replica(const struct tt_uuid *uuid,
 	box_insert_replica_record(replica_id, uuid, name);
 }
 
+/**
+ * Registers replica and immediately advances its gc consumer inside
+ * a transaction.
+ */
+static struct replica *
+box_register_replica_with_consumer(const struct tt_uuid *uuid, const char *name,
+				   const struct vclock *vclock)
+{
+	box_register_replica(uuid, name);
+	struct replica *replica = replica_by_uuid(uuid);
+	if (replica == NULL)
+		tnt_raise(ClientError, ER_CANNOT_REGISTER);
+	if (gc_consumer_advance_sync(replica->gc, vclock) != 0)
+		diag_raise();
+	return replica;
+}
+
 int
 box_process_auth(struct auth_request *request,
 		 const char *salt, uint32_t salt_len)
@@ -4407,19 +4424,13 @@ box_process_register(struct iostream *io, const struct xrow_header *header)
 
 	struct vclock start_vclock;
 	box_localize_vclock(&req.vclock, &start_vclock);
-	struct gc_consumer *gc = gc_consumer_register(
-		&start_vclock, "replica %s", tt_uuid_str(&req.instance_uuid));
-	auto gc_guard = make_scoped_guard([&] { gc_consumer_unregister(gc); });
-
 	say_info("registering replica %s at %s",
 		 tt_uuid_str(&req.instance_uuid), sio_socketname(io->fd));
-	box_register_replica(&req.instance_uuid, req.instance_name);
 
+	replica = box_register_replica_with_consumer(
+		&req.instance_uuid, req.instance_name, &start_vclock);
 	ERROR_INJECT_YIELD(ERRINJ_REPLICA_JOIN_DELAY);
 
-	replica = replica_by_uuid(&req.instance_uuid);
-	if (replica == NULL)
-		tnt_raise(ClientError, ER_CANNOT_REGISTER);
 	/* Remember master's vclock after the last request */
 	struct vclock stop_vclock;
 	vclock_copy(&stop_vclock, &replicaset.vclock);
@@ -4440,14 +4451,9 @@ box_process_register(struct iostream *io, const struct xrow_header *header)
 
 	/*
 	 * Advance the WAL consumer state to the position where
-	 * registration was complete and assign it to the
-	 * replica.
+	 * registration was complete.
 	 */
-	gc_consumer_advance(gc, &stop_vclock);
-	if (replica->gc != NULL)
-		gc_consumer_unregister(replica->gc);
-	replica->gc = gc;
-	gc_guard.is_active = false;
+	gc_consumer_advance(replica->gc, &stop_vclock);
 }
 
 void
@@ -4547,12 +4553,13 @@ box_process_join(struct iostream *io, const struct xrow_header *header)
 		}
 	}
 	/*
-	 * Register the replica as a WAL consumer so that
+	 * Register a WAL consumer for replica so that
 	 * it can resume FINAL JOIN where INITIAL JOIN ends.
 	 */
-	struct gc_consumer *gc = gc_consumer_register(&replicaset.vclock,
-				"replica %s", tt_uuid_str(&req.instance_uuid));
-	auto gc_guard = make_scoped_guard([&] { gc_consumer_unregister(gc); });
+	struct gc_consumer *gc = gc_consumer_register_impl(
+		replica, &replicaset.vclock, "replica %s join",
+		tt_uuid_str(&req.instance_uuid));
+	auto gc_guard = make_scoped_guard([&] { gc_consumer_unregister_impl(gc); });
 
 	say_info("joining replica %s at %s",
 		 tt_uuid_str(&req.instance_uuid), sio_socketname(io->fd));
@@ -4567,13 +4574,14 @@ box_process_join(struct iostream *io, const struct xrow_header *header)
 	 * Register the replica after sending the last row but before sending
 	 * OK - if the registration fails, the error reaches the client.
 	 */
-	box_register_replica(&req.instance_uuid, req.instance_name);
+	replica = box_register_replica_with_consumer(
+		&req.instance_uuid, req.instance_name, &gc->vclock);
+
+	gc_consumer_unregister_impl(gc);
+	gc = NULL;
+	gc_guard.is_active = false;
 
 	ERROR_INJECT_YIELD(ERRINJ_REPLICA_JOIN_DELAY);
-
-	replica = replica_by_uuid(&req.instance_uuid);
-	if (replica == NULL)
-		tnt_raise(ClientError, ER_CANNOT_REGISTER);
 
 	/* Remember master's vclock after the last request */
 	struct vclock stop_vclock;
@@ -4600,13 +4608,9 @@ box_process_join(struct iostream *io, const struct xrow_header *header)
 
 	/*
 	 * Advance the WAL consumer state to the position where
-	 * FINAL JOIN ended and assign it to the replica.
+	 * FINAL JOIN ended.
 	 */
-	gc_consumer_advance(gc, &stop_vclock);
-	if (replica->gc != NULL)
-		gc_consumer_unregister(replica->gc);
-	replica->gc = gc;
-	gc_guard.is_active = false;
+	gc_consumer_advance(replica->gc, &stop_vclock);
 }
 
 void
@@ -4696,6 +4700,11 @@ box_process_subscribe(struct iostream *io, const struct xrow_header *header)
 	if (replica == NULL)
 		replica = replicaset_add_anon(&req.instance_uuid);
 
+	if (!req.is_anon && replica->gc == NULL) {
+		tnt_raise(ClientError, ER_PROTOCOL, "Can't subscribe "
+			  "non-anonymous replica without gc_consumer");
+	}
+
 	/* Don't allow multiple relays for the same replica */
 	if (relay_get_state(replica->relay) == RELAY_FOLLOW) {
 		tnt_raise(ClientError, ER_CFG, "replication",
@@ -4709,25 +4718,12 @@ box_process_subscribe(struct iostream *io, const struct xrow_header *header)
 	}
 	struct vclock start_vclock;
 	box_localize_vclock(&req.vclock, &start_vclock);
-	/*
-	 * Register the replica with the garbage collector.
-	 * In case some of the replica's WAL files were deleted, it might
-	 * subscribe with a smaller vclock than the master remembers, so
-	 * recreate the gc consumer unconditionally to make sure it holds
-	 * the correct vclock.
-	 */
-	if (!replica->anon) {
-		bool had_gc = false;
-		if (replica->gc != NULL) {
-			gc_consumer_unregister(replica->gc);
-			had_gc = true;
-		}
-		replica->gc = gc_consumer_register(&start_vclock, "replica %s",
-						   tt_uuid_str(&replica->uuid));
-		if (replica->gc == NULL)
-			diag_raise();
-		if (!had_gc)
-			gc_delay_unref();
+	/* Advance the garbage collector of replica. */
+	if (!replica->anon &&
+	    gc_consumer_advance_sync(replica->gc, &start_vclock) != 0) {
+		say_error("Cannot modify gc consumer for replica %s",
+			  tt_uuid_str(&replica->uuid));
+		diag_raise();
 	}
 	/*
 	 * Send a response to SUBSCRIBE request, tell

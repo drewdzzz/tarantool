@@ -54,6 +54,7 @@ struct space;
 struct vclock;
 struct key_def;
 struct ballot;
+struct replica;
 
 /**
  * Pointer to TX thread local vclock.
