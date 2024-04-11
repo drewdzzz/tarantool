@@ -39,8 +39,10 @@
 #include "box/authentication.h"
 #include "box/box.h"
 #include "box/errcode.h"
+#include "box/gc.h"
 #include "box/lua/tuple.h"
 #include "box/port.h"
+#include "box/replication.h"
 #include "box/read_view.h"
 #include "box/space_cache.h"
 #include "box/tuple.h"
@@ -373,6 +375,23 @@ lbox_generate_space_id(lua_State *L)
 	return 1;
 }
 
+static int
+lbox_persist_gc_consumers(lua_State *L)
+{
+	(void)L;
+	replicaset_foreach(replica) {
+		/* Skip replicas without consumers and self. */
+		if (replica->gc == NULL ||
+		    tt_uuid_compare(&INSTANCE_UUID, &replica->uuid) == 0)
+			continue;
+		struct vclock *vclock = &replica->gc->vclock;
+		bool with_snap = replica->gc->with_snap;
+		if (box_gc_consumer_set(replica, vclock, with_snap) != 0)
+			luaT_error(L);
+	}
+	return 0;
+}
+
 /* }}} */
 
 /** {{{ Helper that generates user auth data. **/
@@ -557,6 +576,7 @@ box_lua_misc_init(struct lua_State *L)
 		{"read_view_list", lbox_read_view_list},
 		{"read_view_status", lbox_read_view_status},
 		{"generate_space_id", lbox_generate_space_id},
+		{"persist_gc_consumers", lbox_persist_gc_consumers},
 		{NULL, NULL}
 	};
 

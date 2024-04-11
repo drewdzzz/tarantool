@@ -54,6 +54,7 @@ struct space;
 struct vclock;
 struct key_def;
 struct ballot;
+struct replica;
 
 /**
  * Pointer to TX thread local vclock.
@@ -275,6 +276,53 @@ box_process_auth(struct auth_request *request,
 /** Process a vote request. */
 void
 box_process_vote(struct ballot *ballot);
+
+/**
+ * Sets a gc consumer with @a vclock for @a replica. If the replica
+ * had another consumer, it is deleted.
+ */
+int
+box_gc_consumer_set(struct replica *replica, const struct vclock *vclock,
+		    bool with_snap);
+
+/**
+ * Sets a dummy gc consumer for replica. The function is a bit specific - it
+ * uses box_process_rw directly (bypasses box_process1) because this function
+ * can be called during remote recovery and box_process1 will raise an error
+ * in this case (writing to non-recovered space is forbidden).
+ *
+ * NB: we cannot generally write to spaces on recovery for a reason - at this
+ * stage checks of uniqueness are disabled, so duplicate values can appear even
+ * in primary index, so caller should use this function very carefully and
+ * ensure that two consumers won't be created for one replica on recovery.
+ */
+int
+box_gc_consumer_set_dummy(struct replica *replica);
+
+/**
+ * The same as box_gc_consumer_set, but no-op when there is no existing
+ * _gc_consumer.
+ * In the case when gc_consumers are not persistent, works exactly like
+ * box_gc_consumer_set.
+ */
+int
+box_gc_consumer_update(struct replica *replica, const struct vclock *vclock);
+
+/**
+ * The same as box_gc_consumer_update, but is done in a transaction with flag
+ * TXN_FORCE_ASYNC. For extra safety, this function must not be called inside
+ * existing transaction.
+ */
+int
+box_gc_consumer_update_force_async(struct replica *replica,
+				   const struct vclock *vclock);
+
+/**
+ * Unregisters a gc_consumer for @a replica. Is no-op if the replica has no
+ * registered gc consumer.
+ */
+int
+box_gc_consumer_unregister(struct replica *replica);
 
 #if defined(__cplusplus)
 } /* extern "C" */

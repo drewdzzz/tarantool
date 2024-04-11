@@ -398,6 +398,19 @@ gc_wait_cleanup(void)
 		fiber_cond_wait(&gc.cleanup_cond);
 }
 
+/**
+ * Returns true iff consumer is outdated and should be deactivated.
+ */
+static bool
+gc_consumer_is_outdated(struct gc_consumer *consumer)
+{
+	/*
+	 * Consumer is outdated if its vclock is either less than
+	 * or incomparable with the wal gc vclock.
+	 */
+	return vclock_compare_ignore0(&gc.vclock, &consumer->vclock) > 0;
+}
+
 void
 gc_advance(const struct vclock *vclock)
 {
@@ -418,7 +431,7 @@ gc_advance(const struct vclock *vclock)
 		 * either less than or incomparable with the wal
 		 * gc vclock.
 		 */
-		if (vclock_compare_ignore0(vclock, &consumer->vclock) <= 0) {
+		if (!gc_consumer_is_outdated(consumer)) {
 			consumer = next;
 			continue;
 		}
@@ -666,7 +679,8 @@ gc_unref_checkpoint(struct gc_checkpoint_ref *ref)
 }
 
 struct gc_consumer *
-gc_consumer_register(const struct vclock *vclock, const char *format, ...)
+gc_consumer_register(const struct vclock *vclock, bool with_snap,
+		     const char *format, ...)
 {
 	struct gc_consumer *consumer = xmempool_alloc(&gc.gc_consumer_pool);
 
@@ -676,7 +690,24 @@ gc_consumer_register(const struct vclock *vclock, const char *format, ...)
 	va_end(ap);
 
 	vclock_copy(&consumer->vclock, vclock);
-	gc_tree_insert(&gc.consumers, consumer);
+	consumer->is_dummy = false;
+	consumer->with_snap = with_snap;
+	consumer->is_inactive = gc_consumer_is_outdated(consumer);
+	if (!consumer->is_inactive)
+		gc_tree_insert(&gc.consumers, consumer);
+	return consumer;
+}
+
+struct gc_consumer *
+gc_consumer_register_dummy(void)
+{
+	struct gc_consumer *consumer = xmempool_alloc(&gc.gc_consumer_pool);
+
+	snprintf(consumer->name, GC_NAME_MAX, "Dummy consumer");
+	vclock_create(&consumer->vclock);
+	consumer->is_dummy = true;
+	consumer->with_snap = false;
+	consumer->is_inactive = true;
 	return consumer;
 }
 
@@ -688,38 +719,6 @@ gc_consumer_unregister(struct gc_consumer *consumer)
 		gc_schedule_cleanup();
 	}
 	gc_consumer_delete(consumer);
-}
-
-void
-gc_consumer_advance(struct gc_consumer *consumer, const struct vclock *vclock)
-{
-	if (consumer->is_inactive)
-		return;
-
-	int64_t signature = vclock_sum(vclock);
-	int64_t prev_signature = vclock_sum(&consumer->vclock);
-
-	assert(signature >= prev_signature);
-	if (signature == prev_signature)
-		return; /* nothing to do */
-
-	/*
-	 * Do not update the tree unless the tree invariant
-	 * is violated.
-	 */
-	struct gc_consumer *next = gc_tree_next(&gc.consumers, consumer);
-	bool update_tree = (next != NULL &&
-			    vclock_lex_compare(vclock, &next->vclock) >= 0);
-
-	if (update_tree)
-		gc_tree_remove(&gc.consumers, consumer);
-
-	vclock_copy(&consumer->vclock, vclock);
-
-	if (update_tree)
-		gc_tree_insert(&gc.consumers, consumer);
-
-	gc_schedule_cleanup();
 }
 
 struct gc_consumer *

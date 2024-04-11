@@ -61,6 +61,7 @@
 #include "authentication.h"
 #include "node_name.h"
 #include "core/func_adapter.h"
+#include "gc.h"
 
 /* {{{ Auxiliary functions and methods. */
 
@@ -2126,6 +2127,14 @@ on_replace_dd_space(struct trigger * /* trigger */, void *event)
 		struct space *space = space_new(def, &empty_list);
 		if (space == NULL)
 			return -1;
+		/*
+		 * Space _gc_consumers has no surrogate space so we need to
+		 * set its trigger here.
+		 */
+		if (space_id(space) == BOX_GC_CONSUMERS_ID) {
+			trigger_add(&space->on_replace,
+				    &on_replace_gc_consumers);
+		}
 		/**
 		 * The new space must be inserted in the space
 		 * cache right away to achieve linearisable
@@ -4417,6 +4426,218 @@ on_replace_dd_schema(struct trigger * /* trigger */, void *event)
 	return 0;
 }
 
+/** GC consumer definition. */
+struct gc_consumer_def {
+	/** Instance UUID. */
+	struct tt_uuid uuid;
+	/** Instance vclock. */
+	struct vclock vclock;
+	/** Is set if the consumer has vclock. */
+	bool has_vclock;
+	/** See gc_consumer::with_snap. */
+	bool with_snap;
+};
+
+/** Mapping from tuple.opts to fields of gc_consumer_def. */
+const struct opt_def gc_consumer_def_opts_reg[] = {
+	OPT_DEF("with_snap", OPT_BOOL, struct gc_consumer_def, with_snap),
+	OPT_END,
+};
+
+/**
+ * Fill gc_consumer_def with opts from the MsgPack map.
+ * Argument map can be NULL - default options are set in this case.
+ */
+static int
+gc_consumer_def_opts_decode(struct gc_consumer_def *def, const char *map,
+			    struct region *region)
+{
+	def->with_snap = false;
+	if (map == NULL)
+		return 0;
+	return opts_decode(def, gc_consumer_def_opts_reg, &map, region);
+}
+
+/** Build gc_consumer definition from a _gc_consumers' tuple. */
+static struct gc_consumer_def *
+gc_consumer_def_new_from_tuple(struct tuple *tuple, struct region *region)
+{
+	struct gc_consumer_def *def =
+		xregion_alloc_object(region, typeof(*def));
+	memset(def, 0, sizeof(*def));
+	if (tuple_field_uuid(tuple, BOX_GC_CONSUMERS_FIELD_UUID, &def->uuid) != 0)
+		return NULL;
+	if (tt_uuid_is_nil(&def->uuid)) {
+		diag_set(ClientError, ER_INVALID_UUID, tt_uuid_str(&def->uuid));
+		return NULL;
+	}
+	def->has_vclock =
+		!tuple_field_is_nil(tuple, BOX_GC_CONSUMERS_FIELD_VCLOCK);
+	if (def->has_vclock) {
+		const char *mp_vclock = tuple_field_with_type(
+			tuple, BOX_GC_CONSUMERS_FIELD_VCLOCK, MP_MAP);
+		if (mp_vclock == NULL)
+			return NULL;
+		if (mp_decode_vclock_ignore0(&mp_vclock, &def->vclock) != 0) {
+			diag_set(ClientError, ER_INVALID_VCLOCK);
+			return NULL;
+		}
+	}
+	const char *opts = NULL;
+	if (tuple_field(tuple, BOX_GC_CONSUMERS_FIELD_OPTS) != NULL) {
+		opts = tuple_field_with_type(tuple, BOX_GC_CONSUMERS_FIELD_OPTS,
+					     MP_MAP);
+	}
+	if (gc_consumer_def_opts_decode(def, opts, region) != 0)
+		return NULL;
+	return def;
+}
+
+/**
+ * Data passed to transactional triggers of replace in _gc_consumers.
+ */
+struct gc_consumers_txn_trigger_data {
+	/*
+	 * Replica UUID. Is used instead of replica object because it can be
+	 * unregistered before the trigger is fired.
+	 */
+	struct tt_uuid uuid;
+	/*
+	 * New GC consumer, will be unregistered on rollback.
+	 */
+	struct gc_consumer *new_gc;
+};
+
+static int
+on_insert_update_dd_gc_consumers_rollback(struct trigger *trigger, void *)
+{
+	struct gc_consumers_txn_trigger_data *data =
+		(struct gc_consumers_txn_trigger_data *)trigger->data;
+	assert(data->new_gc != NULL);
+	gc_consumer_unregister(data->new_gc);
+	return 0;
+}
+
+static int
+on_replace_dd_gc_consumers_commit(struct trigger *trigger, void *)
+{
+	struct gc_consumers_txn_trigger_data *data =
+		(struct gc_consumers_txn_trigger_data *)trigger->data;
+	struct replica *replica = replica_by_uuid(&data->uuid);
+	struct gc_consumer *new_gc = data->new_gc;
+	/* Set new GC only if the replica is still registered. */
+	if (replica != NULL) {
+		/* Drop the gc ref on creating first non-dummy consumer. */
+		if ((replica->gc == NULL || replica->gc->is_dummy) &&
+		    new_gc != NULL && !new_gc->is_dummy)
+			gc_delay_unref();
+
+		/* Drop the old gc consumer if any. */
+		if (replica->gc != NULL)
+			gc_consumer_unregister(replica->gc);
+		replica->gc = new_gc;
+	} else {
+		if (new_gc != NULL)
+			gc_consumer_unregister(new_gc);
+	}
+	return 0;
+}
+
+/**
+ * The trigger invoked on replace in space _gc_consumers.
+ * Note that due to concurrent nature of transactions it is unsafe
+ * to modify replica->gc right here and in on_rollback, so it is
+ * modified only in on_commit triggers - it is safe because they
+ * are called in order of transactions' serialization.
+ */
+static int
+on_replace_dd_gc_consumers(struct trigger * /* trigger */, void *event)
+{
+	struct txn *txn = (struct txn *)event;
+	RegionGuard region_guard(&fiber()->gc);
+	struct txn_stmt *stmt = txn_current_stmt(txn);
+	struct tuple *old_tuple = stmt->old_tuple;
+	struct tuple *new_tuple = stmt->new_tuple;
+	struct gc_consumer_def *old_def = NULL;
+	struct gc_consumer_def *new_def = NULL;
+	struct tt_uuid *replica_uuid = NULL;
+	if (old_tuple != NULL) {
+		old_def =
+			gc_consumer_def_new_from_tuple(old_tuple, &fiber()->gc);
+		if (old_def == NULL)
+			return -1;
+		replica_uuid = &old_def->uuid;
+	}
+	if (new_tuple != NULL) {
+		new_def =
+			gc_consumer_def_new_from_tuple(new_tuple, &fiber()->gc);
+		if (new_def == NULL)
+			return -1;
+		replica_uuid = &new_def->uuid;
+	}
+	assert(old_def != NULL || new_def != NULL);
+
+	/* Just making sure that both tuples have the same uuid. */
+	assert(old_def == NULL || new_def == NULL ||
+	       tt_uuid_is_equal(&old_def->uuid, &new_def->uuid));
+
+	/*
+	 * We cannot rely on the fact that the replica is still registered
+	 * in-memory because it can be dropped in the same transaction, and
+	 * replica_hash will be updated only on commit, so read row right
+	 * from the _cluster. It's important to lookup by uuid, not id,
+	 * to correctly handle the case when uuid of replica is updated
+	 * and id is the same.
+	 */
+	char key[UUID_STR_LEN + 10];
+	char *key_end = key;
+	key_end = mp_encode_array(key_end, 1);
+	key_end = mp_encode_str0(key_end, tt_uuid_str(replica_uuid));
+	assert((size_t)(key_end - key) < sizeof(key));
+	struct tuple *replica_row;
+	if (box_index_get(BOX_CLUSTER_ID, 1, key, key_end, &replica_row) != 0)
+		return -1;
+	bool replica_is_registered = replica_row != NULL;
+
+	if (!replica_is_registered && new_def != NULL) {
+		diag_set(ClientError, ER_UNSUPPORTED, "gc_consumer",
+			 "create or update without replica");
+		return -1;
+	}
+	if (replica_is_registered && new_def == NULL) {
+		diag_set(ClientError, ER_UNSUPPORTED, "gc_consumer",
+			 "delete while its replica is still registered");
+		return -1;
+	}
+
+	struct gc_consumers_txn_trigger_data *trg_data =
+		xregion_alloc_object(&in_txn()->region,
+				     struct gc_consumers_txn_trigger_data);
+	trg_data->uuid = *replica_uuid;
+	trg_data->new_gc = NULL;
+
+	if (new_def != NULL) { /* INSERT, UPDATE */
+		/* Create new consumer and set it to the replica on commit. */
+		if (new_def->has_vclock) {
+			trg_data->new_gc = gc_consumer_register(
+				&new_def->vclock, new_def->with_snap,
+				"replica %s", tt_uuid_str(replica_uuid));
+		} else {
+			trg_data->new_gc = gc_consumer_register_dummy();
+		}
+		struct trigger *on_rollback =
+			txn_alter_trigger_new(
+				on_insert_update_dd_gc_consumers_rollback,
+				trg_data);
+		txn_stmt_on_rollback(stmt, on_rollback);
+	}
+	struct trigger *on_commit =
+		txn_alter_trigger_new(on_replace_dd_gc_consumers_commit,
+				      trg_data);
+	txn_stmt_on_commit(stmt, on_commit);
+	return 0;
+}
+
 /** Unregister the replica affected by the change. */
 static int
 on_replace_cluster_clear_id(struct trigger *trigger, void * /* event */)
@@ -4605,10 +4826,16 @@ on_replace_dd_cluster_update(const struct replica_def *old_def,
 				 "own UUID update in _cluster");
 			return -1;
 		}
+		/* Drop gc_consumer for the replaced replica. */
+		if (box_gc_consumer_unregister(replica) != 0)
+			return -1;
 		if (on_replace_dd_cluster_set_uuid(replica, new_def) != 0)
 			return -1;
 		/* The replica was re-created. */
 		replica = replica_by_id(new_def->id);
+		/* Create dummy consumer for the new replica. */
+		if (box_gc_consumer_set_dummy(replica) != 0)
+			return -1;
 	}
 	return on_replace_dd_cluster_set_name(replica, new_def->name);
 }
@@ -4656,6 +4883,28 @@ on_replace_dd_cluster_insert(const struct replica_def *new_def)
 		replica = replicaset_add(new_def->id, &new_def->uuid);
 	on_rollback->data = replica;
 	txn_stmt_on_rollback(stmt, on_rollback);
+
+	/*
+	 * When recovering from local storage, gc_consumer for the created
+	 * replica will appear later, so here we should create dummy consumer
+	 * only after recovery or during remote recovery.
+	 */
+	bool create_gc_consumer = recovery_state == FINISHED_RECOVERY ||
+		current_session()->type == SESSION_TYPE_APPLIER;
+	if (create_gc_consumer &&
+	    tt_uuid_compare(&INSTANCE_UUID, &new_def->uuid) != 0) {
+		assert(replica->gc == NULL);
+		/*
+		 * Create dummy in-memory consumer for the replica right on
+		 * replace so we don't need to wait for commit to subscribe
+		 * the replica (subscribe will fail without consumer, and
+		 * persistent one is set to replica on commit).
+		 */
+		replica->gc = gc_consumer_register_dummy();
+		if (box_gc_consumer_set_dummy(replica) != 0)
+			return -1;
+	}
+
 	return on_replace_dd_cluster_set_name(replica, new_def->name);
 }
 
@@ -4692,6 +4941,9 @@ on_replace_dd_cluster_delete(const struct replica_def *old_def)
 		      "internally - %s", old_def->id,
 		      tt_uuid_str(&old_def->uuid), tt_uuid_str(&replica->uuid));
 	}
+	/* Unregister gc consumer of the replica. */
+	if (box_gc_consumer_unregister(replica) != 0)
+		return -1;
 	/*
 	 * Unregister only after commit. Otherwise if the transaction would be
 	 * rolled back, there might be already another replica taken the freed
@@ -5563,4 +5815,5 @@ TRIGGER(on_replace_sequence_data, on_replace_dd_sequence_data);
 TRIGGER(on_replace_space_sequence, on_replace_dd_space_sequence);
 TRIGGER(on_replace_trigger, on_replace_dd_trigger);
 TRIGGER(on_replace_func_index, on_replace_dd_func_index);
+TRIGGER(on_replace_gc_consumers, on_replace_dd_gc_consumers);
 /* vim: set foldmethod=marker */

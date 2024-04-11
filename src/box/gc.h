@@ -47,6 +47,7 @@ extern "C" {
 
 struct fiber;
 struct gc_consumer;
+struct replica;
 
 enum { GC_NAME_MAX = 64 };
 
@@ -98,6 +99,13 @@ struct gc_consumer {
 	 * deleted by the WAL thread on ENOSPC.
 	 */
 	bool is_inactive;
+	/** This flag is set if the consumer tracks snapshot. */
+	bool with_snap;
+	/**
+	 * This flag is set if the consumer is dummy and actually
+	 * has never been active.
+	 */
+	bool is_dummy;
 };
 
 typedef rb_tree(struct gc_consumer) gc_tree_t;
@@ -347,9 +355,20 @@ gc_unref_checkpoint(struct gc_checkpoint_ref *ref);
  * Returns a pointer to the new consumer object, never fails
  * (panics on memory allocation failure).
  */
-CFORMAT(printf, 2, 3)
+CFORMAT(printf, 3, 4)
 struct gc_consumer *
-gc_consumer_register(const struct vclock *vclock, const char *format, ...);
+gc_consumer_register(const struct vclock *vclock, bool with_snap,
+		     const char *format, ...);
+
+/**
+ * Register a dummy consumer - it has an empty vclock and is inactive
+ * right from the start (does not pin any xlogs).
+ *
+ * Returns a pointer to the new consumer object, never fails
+ * (panics on memory allocation failure).
+ */
+struct gc_consumer *
+gc_consumer_register_dummy(void);
 
 /**
  * Unregister a consumer and invoke garbage collection
@@ -357,13 +376,6 @@ gc_consumer_register(const struct vclock *vclock, const char *format, ...);
  */
 void
 gc_consumer_unregister(struct gc_consumer *consumer);
-
-/**
- * Advance the vclock tracked by a consumer and
- * invoke garbage collection if needed.
- */
-void
-gc_consumer_advance(struct gc_consumer *consumer, const struct vclock *vclock);
 
 /**
  * Iterator over registered consumers. The iterator is valid
