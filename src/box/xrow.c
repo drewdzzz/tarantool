@@ -65,7 +65,7 @@ static_assert(IPROTO_DATA < 0x7f && IPROTO_METADATA < 0x7f &&
 	      IPROTO_SQL_INFO < 0x7f, "encoded IPROTO_BODY keys must fit into "\
 	      "one byte");
 
-static inline uint32_t
+uint32_t
 mp_sizeof_vclock_ignore0(const struct vclock *vclock)
 {
 	uint32_t size = vclock_size_ignore0(vclock);
@@ -73,7 +73,7 @@ mp_sizeof_vclock_ignore0(const struct vclock *vclock)
 					     mp_sizeof_uint(UINT64_MAX));
 }
 
-static inline char *
+char *
 mp_encode_vclock_ignore0(char *data, const struct vclock *vclock)
 {
 	data = mp_encode_map(data, vclock_size_ignore0(vclock));
@@ -90,7 +90,7 @@ mp_encode_vclock_ignore0(char *data, const struct vclock *vclock)
 	return data;
 }
 
-static int
+int
 mp_decode_vclock_ignore0(const char **data, struct vclock *vclock)
 {
 	vclock_create(vclock);
@@ -98,11 +98,15 @@ mp_decode_vclock_ignore0(const char **data, struct vclock *vclock)
 		return -1;
 	uint32_t size = mp_decode_map(data);
 	for (uint32_t i = 0; i < size; i++) {
-		if (mp_typeof(**data) != MP_UINT)
+		if (mp_typeof(**data) != MP_UINT) {
+			diag_set(ClientError, ER_PROC_C, "Replica id must be MP_UINT");
 			return -1;
+		}
 		uint32_t id = mp_decode_uint(data);
-		if (mp_typeof(**data) != MP_UINT)
+		if (mp_typeof(**data) != MP_UINT) {
+			diag_set(ClientError, ER_PROC_C, "LSN must be MP_UINT");
 			return -1;
+		}
 		int64_t lsn = mp_decode_uint(data);
 		/*
 		 * Skip vclock[0] coming from the remote
