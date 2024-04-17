@@ -37,6 +37,7 @@
 #include "tt_static.h"
 #include "tt_uuid.h"
 #include "tuple_format.h"
+#include "xrow.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -1436,6 +1437,23 @@ tuple_field_uuid(struct tuple *tuple, int fieldno, struct tt_uuid *out)
 		return -1;
 	if (tt_uuid_from_string(value, out) != 0) {
 		diag_set(ClientError, ER_INVALID_UUID, value);
+		return -1;
+	}
+	return 0;
+}
+
+/**
+ * Parse a tuple field which is expected to contain a vclock,
+ * which is MP_MAP. Local lsn (zero dimension) is ignored.
+ */
+static inline int
+tuple_field_vclock(struct tuple *tuple, int fieldno, struct vclock *out)
+{
+	const char *field = tuple_field_with_type(tuple, fieldno, MP_MAP);
+	if (field == NULL)
+		return -1;
+	if (mp_decode_vclock_ignore0(&field, out) != 0) {
+		diag_set(ClientError, ER_PROC_C, "TODO");
 		return -1;
 	}
 	return 0;
