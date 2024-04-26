@@ -4456,9 +4456,9 @@ gc_consumer_def_new_from_tuple(struct tuple *tuple, struct region *region)
 }
 
 /**
- * Data passed to on_rollback triggers of replace in _gc_consumers.
+ * Data passed to transactional triggers of replace in _gc_consumers.
  */
-struct gc_consumers_on_rollback_data {
+struct gc_consumers_txn_trigger_data {
 	/*
 	 * Replica that the gc_consumer belongs to.
 	 */
@@ -4471,30 +4471,42 @@ struct gc_consumers_on_rollback_data {
 	 * New GC consumer, will be unregistered on rollback.
 	 */
 	struct gc_consumer *new_gc;
-	/*
-	 * Old GC consumer of the replica, will be set back on rollback.
-	 */
-	struct gc_consumer *old_gc;
 };
 
 static int
 gc_consumers_rollback_insert(struct trigger *trigger, void *)
 {
-	struct gc_consumers_on_rollback_data *data =
-		(struct gc_consumers_on_rollback_data *)trigger->data;
-	struct tt_uuid *uuid = &data->uuid;
-	/* Set old GC only if the replica is still registered. */
-	if (replica_by_uuid(uuid) == data->replica)
-		data->replica->gc = data->old_gc;
+	struct gc_consumers_txn_trigger_data *data =
+		(struct gc_consumers_txn_trigger_data *)trigger->data;
+	/* Consumer was only created on replace, so simply delete it here. */
 	gc_consumer_unregister(data->new_gc);
+	return 0;
+}
+
+static int
+gc_consumers_commit_insert(struct trigger *trigger, void *)
+{
+	struct gc_consumers_txn_trigger_data *data =
+		(struct gc_consumers_txn_trigger_data *)trigger->data;
+	struct tt_uuid *uuid = &data->uuid;
+	/* Set new GC only if the replica is still registered. */
+	if (replica_by_uuid(uuid) == data->replica) {
+		data->replica->gc = data->new_gc;
+	} else {
+		gc_consumer_unregister(data->new_gc);
+	}
 	return 0;
 }
 
 static int
 gc_consumers_commit_delete(struct trigger *trigger, void *)
 {
-	struct gc_consumer *gc = (struct gc_consumer *)trigger->data;
-	gc_consumer_unregister(gc);
+	struct gc_consumers_txn_trigger_data *data =
+		(struct gc_consumers_txn_trigger_data *)trigger->data;
+	struct tt_uuid *uuid = &data->uuid;
+	/* Drop old GC only if the replica is still registered. */
+	if (replica_by_uuid(uuid) == data->replica)
+		gc_consumer_unregister(data->old_gc);
 	return 0;
 }
 
@@ -4530,35 +4542,35 @@ on_replace_dd_gc_consumers(struct trigger * /* trigger */, void *event)
 		return -1;
 	}
 
+	struct gc_consumers_txn_trigger_data *trg_data =
+		xregion_alloc_object(&in_txn()->region,
+				     struct gc_consumers_txn_trigger_data);
+	trg_data->uuid = *replica_uuid;
+	trg_data->replica = replica;
+	trg_data->new_gc = NULL;
+
 	if (old_tuple != NULL) {
-		/* Drop old conumser on commit. */
-		if (replica->gc == NULL)
-			panic("Replica unexpectedly has no gc consumer "
-			      "on delete in _gc_consumers");
 		assert(vclock_compare(&replica->gc->vclock, &old_def->vclock) == 0);
 		struct trigger *on_commit =
 			txn_alter_trigger_new(gc_consumers_commit_delete,
-					      replica->gc);
+					      trg_data);
 		txn_stmt_on_commit(stmt, on_commit);
 	}
 	if (new_tuple != NULL) {
-		/* Create new consumer and set it to the replica. */
-		struct gc_consumers_on_rollback_data *on_rollback_data =
-			xregion_alloc_object(
-				&in_txn()->region,
-				struct gc_consumers_on_rollback_data);
-		on_rollback_data->replica = replica;
-		on_rollback_data->old_gc = replica->gc;
-		on_rollback_data->uuid = *replica_uuid;
-		replica->gc = gc_consumer_register(&new_def->vclock,
-						   new_def->with_snap,
-						   "replica %s",
-						   tt_uuid_str(replica_uuid));
-		on_rollback_data->new_gc = replica->gc;
+		/* Create new consumer and set it to the replica on commit. */
+		trg_data->new_gc = gc_consumer_register(
+			&new_def->vclock, new_def->with_snap, "replica %s",
+			tt_uuid_str(replica_uuid));
+		if (trg_data->new_gc == NULL)
+			return -1;
 		struct trigger *on_rollback =
 			txn_alter_trigger_new(gc_consumers_rollback_insert,
-					      on_rollback_data);
+					      trg_data);
 		txn_stmt_on_rollback(stmt, on_rollback);
+		struct trigger *on_commit =
+			txn_alter_trigger_new(gc_consumers_commit_insert,
+					      trg_data);
+		txn_stmt_on_commit(stmt, on_commit);
 	}
 	return 0;
 }
