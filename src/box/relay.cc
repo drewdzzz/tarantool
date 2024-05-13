@@ -1113,8 +1113,6 @@ relay_subscribe(struct replica *replica, struct iostream *io, uint64_t sync,
 		}
 		replica->gc = gc_consumer_register(replica_clock, "replica %s",
 						   tt_uuid_str(&replica->uuid));
-		if (replica->gc == NULL)
-			diag_raise();
 		if (!had_gc)
 			gc_delay_unref();
 	}

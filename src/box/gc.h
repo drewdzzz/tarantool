@@ -33,6 +33,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <small/mempool.h>
 #include <small/rlist.h>
 
 #include "fiber_cond.h"
@@ -166,6 +167,10 @@ struct gc_state {
 	 * Delay timeout in seconds.
 	 */
 	double wal_cleanup_delay;
+	/**
+	 * The pool is used to allocate gc consumers.
+	 */
+	struct mempool gc_consumer_pool;
 	/**
 	 * When set the cleanup fiber is paused.
 	 */
@@ -339,8 +344,8 @@ gc_unref_checkpoint(struct gc_checkpoint_ref *ref);
  * @format... specifies a human-readable name of the consumer,
  * it will be used for listing the consumer in box.info.gc().
  *
- * Returns a pointer to the new consumer object or NULL on
- * memory allocation failure.
+ * Returns a pointer to the new consumer object, never fails
+ * (panics on memory allocation failure).
  */
 CFORMAT(printf, 2, 3)
 struct gc_consumer *

@@ -4391,8 +4391,6 @@ box_process_register(struct iostream *io, const struct xrow_header *header)
 	vclock_reset(&req.vclock, 0, vclock_get(&replicaset.vclock, 0));
 	struct gc_consumer *gc = gc_consumer_register(
 		&req.vclock, "replica %s", tt_uuid_str(&req.instance_uuid));
-	if (gc == NULL)
-		diag_raise();
 	auto gc_guard = make_scoped_guard([&] { gc_consumer_unregister(gc); });
 
 	say_info("registering replica %s at %s",
@@ -4537,8 +4535,6 @@ box_process_join(struct iostream *io, const struct xrow_header *header)
 	 */
 	struct gc_consumer *gc = gc_consumer_register(&replicaset.vclock,
 				"replica %s", tt_uuid_str(&req.instance_uuid));
-	if (gc == NULL)
-		diag_raise();
 	auto gc_guard = make_scoped_guard([&] { gc_consumer_unregister(gc); });
 
 	say_info("joining replica %s at %s",
