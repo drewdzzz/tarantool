@@ -44,6 +44,7 @@
 #define RB_COMPACT 1
 #include <small/rb.h>
 #include <small/rlist.h>
+#include <small/slab_cache.h>
 #include <tarantool_ev.h>
 
 #include "diag.h"
@@ -90,7 +91,7 @@ static void
 gc_consumer_delete(struct gc_consumer *consumer)
 {
 	TRASH(consumer);
-	free(consumer);
+	mempool_free(&gc.gc_consumer_pool, consumer);
 }
 
 /** Free a checkpoint object. */
@@ -112,6 +113,8 @@ gc_init(on_garbage_collection_f on_garbage_collection)
 	gc.is_paused = true;
 	say_info("wal/engine cleanup is paused");
 
+	mempool_create(&gc.gc_consumer_pool, &cord()->slabc,
+		       sizeof(struct gc_consumer));
 	vclock_create(&gc.vclock);
 	rlist_create(&gc.checkpoints);
 	gc_tree_new(&gc.consumers);
@@ -169,6 +172,7 @@ gc_free(void)
 		gc_consumer_delete(consumer);
 		consumer = next;
 	}
+	mempool_destroy(&gc.gc_consumer_pool);
 }
 
 /**
@@ -664,10 +668,10 @@ gc_unref_checkpoint(struct gc_checkpoint_ref *ref)
 struct gc_consumer *
 gc_consumer_register(const struct vclock *vclock, const char *format, ...)
 {
-	struct gc_consumer *consumer = calloc(1, sizeof(*consumer));
+	struct gc_consumer *consumer = mempool_alloc(&gc.gc_consumer_pool);
 	if (consumer == NULL) {
 		diag_set(OutOfMemory, sizeof(*consumer),
-			 "malloc", "struct gc_consumer");
+			 "mempool_alloc", "struct gc_consumer");
 		return NULL;
 	}
 

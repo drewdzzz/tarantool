@@ -33,6 +33,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <small/mempool.h>
 #include <small/rlist.h>
 
 #include "fiber_cond.h"
@@ -166,6 +167,10 @@ struct gc_state {
 	 * Delay timeout in seconds.
 	 */
 	double wal_cleanup_delay;
+	/**
+	 * The pool is used to allocate gc consumers.
+	 */
+	struct mempool gc_consumer_pool;
 	/**
 	 * When set the cleanup fiber is paused.
 	 */
