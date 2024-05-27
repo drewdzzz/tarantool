@@ -758,7 +758,7 @@ relay_process_ack(struct relay *relay, double tm)
 	 * Both vclocks are confirmed by the same applier, sequentially. They
 	 * can't go down.
 	 */
-	assert(vclock_compare(prev_vclock, next_vclock) <= 0);
+	assert(vclock_compare_ignore0(prev_vclock, next_vclock) <= 0);
 	if (vclock_compare_ignore0(prev_vclock, next_vclock) < 0)
 		relay->txn_lag = ev_now(loop()) - tm;
 }
