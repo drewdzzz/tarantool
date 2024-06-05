@@ -39,6 +39,7 @@
 #include "vclock/vclock.h"
 #include "trivia/util.h"
 #include "checkpoint_schedule.h"
+#include "tt_uuid.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -81,13 +82,18 @@ struct gc_checkpoint_ref {
 	char name[GC_NAME_MAX];
 };
 
+typedef rb_tree(struct gc_consumer) gc_consumer_hash_t;
+
 /**
  * The object of this type is used to prevent garbage
  * collection from removing WALs that are still in use.
  */
 struct gc_consumer {
-	/** Link in gc_state::consumers. */
-	gc_node_t node;
+	/** Link in gc_state::consumers_hash. */
+	gc_node_t in_hash;	
+	/** Link in gc_state::active_consumers. */
+	gc_node_t in_active;
+	struct tt_uuid uuid;
 	/** Human-readable name. */
 	char name[GC_NAME_MAX];
 	/** The vclock tracked by this consumer. */
@@ -126,8 +132,16 @@ struct gc_state {
 	 * to the tail. Linked by gc_checkpoint::in_checkpoints.
 	 */
 	struct rlist checkpoints;
-	/** Registered consumers, linked by gc_consumer::node. */
-	gc_tree_t consumers;
+	/**
+	 * All non-anonymous consumers indexed by uuid.
+	 * Linked by gc_consumer::in_hash.
+	 */
+	gc_consumer_hash_t consumers_hash;
+	/**
+	 * Registered consumers indexed by vclock.
+	 * Linked by gc_consumer::in_active.
+	 * */
+	gc_tree_t active_consumers;
 	/** Fiber responsible for periodic checkpointing. */
 	struct fiber *checkpoint_fiber;
 	/** Schedule of periodic checkpoints. */
@@ -342,33 +356,45 @@ gc_unref_checkpoint(struct gc_checkpoint_ref *ref);
  * Returns a pointer to the new consumer object or NULL on
  * memory allocation failure.
  */
+CFORMAT(printf, 3, 4)
+void
+gc_consumer_register(const struct tt_uuid *uuid, const struct vclock *vclock,
+		     const char *format, ...);
+
 CFORMAT(printf, 2, 3)
 struct gc_consumer *
-gc_consumer_register(const struct vclock *vclock, const char *format, ...);
+gc_consumer_register_anonymous(const struct vclock *vclock,
+			       const char *format, ...);
 
 /**
  * Unregister a consumer and invoke garbage collection
- * if needed.
+ * if needed. No-op if consumer does not exist.
  */
 void
-gc_consumer_unregister(struct gc_consumer *consumer);
+gc_consumer_unregister(const struct tt_uuid *uuid);
+
+void
+gc_consumer_unregister_anonymous(struct gc_consumer *consumer);
 
 /**
  * Advance the vclock tracked by a consumer and
  * invoke garbage collection if needed.
  */
 void
-gc_consumer_advance(struct gc_consumer *consumer, const struct vclock *vclock);
+gc_consumer_advance(const struct tt_uuid *uuid, const struct vclock *vclock);
+
+bool
+gc_consumer_is_registered(const struct tt_uuid *uuid);
 
 /**
- * Iterator over registered consumers. The iterator is valid
+ * Iterator over active registered consumers. The iterator is valid
  * as long as the caller doesn't yield.
  */
 struct gc_consumer_iterator {
 	struct gc_consumer *curr;
 };
 
-/** Init an iterator over consumers. */
+/** Init an iterator over active consumers. */
 static inline void
 gc_consumer_iterator_init(struct gc_consumer_iterator *it)
 {
@@ -376,7 +402,7 @@ gc_consumer_iterator_init(struct gc_consumer_iterator *it)
 }
 
 /**
- * Iterate to the next registered consumer. Return a pointer
+ * Iterate to the next active registered consumer. Return a pointer
  * to the next consumer object or NULL if there is no more
  * consumers.
  */
