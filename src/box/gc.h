@@ -47,6 +47,7 @@ extern "C" {
 
 struct fiber;
 struct gc_consumer;
+struct trigger;
 
 enum { GC_NAME_MAX = 64 };
 
@@ -96,7 +97,10 @@ struct gc_consumer {
 	struct tt_uuid uuid;
 	/** Human-readable name. */
 	char name[GC_NAME_MAX];
-	/** The vclock tracked by this consumer. */
+	/**
+	 * The vclock tracked by this consumer. Is consistent
+	 * with persistent state.
+	 */
 	struct vclock vclock;
 	/**
 	 * This flag is set if a WAL needed by this consumer was
@@ -346,45 +350,55 @@ void
 gc_unref_checkpoint(struct gc_checkpoint_ref *ref);
 
 /**
- * Register a consumer.
- *
- * This will stop garbage collection of WAL files newer than
- * @vclock until the consumer is unregistered or advanced.
- * @format... specifies a human-readable name of the consumer,
- * it will be used for listing the consumer in box.info.gc().
- *
- * Returns a pointer to the new consumer object or NULL on
- * memory allocation failure.
+ * Register a named anonyomous gc consumer. It has no associated
+ * uuid, cannot be advanced and is never persisted.
  */
-CFORMAT(printf, 3, 4)
-void
-gc_consumer_register(const struct tt_uuid *uuid, const struct vclock *vclock,
-		     const char *format, ...);
-
 CFORMAT(printf, 2, 3)
 struct gc_consumer *
 gc_consumer_register_anonymous(const struct vclock *vclock,
 			       const char *format, ...);
 
 /**
- * Unregister a consumer and invoke garbage collection
- * if needed. No-op if consumer does not exist.
+ * Unregister an anonymous consumer.
  */
-void
-gc_consumer_unregister(const struct tt_uuid *uuid);
-
 void
 gc_consumer_unregister_anonymous(struct gc_consumer *consumer);
 
 /**
- * Update the vclock tracked by a consumer and
- * invoke garbage collection if needed.
+ * Synchronously register a dummy gc consumer (does not pin any xlogs).
+ * On success, the function returns 0 and the created gc consumer is
+ * persisted. Otherwise, returns -1, persistent state is not modified.
+ * 
+ * NB: The function yields if is called outside active transaction.
  */
-void
+int
+gc_consumer_register_dummy(const struct tt_uuid *uuid);
+
+/**
+ * Synchronously unregister a gc consumer.
+ * On success, the function returns 0 and the gc consumer is removed from
+ * persistent state. Otherwise, returns -1, persistent state is not modified.
+ * 
+ * NB: The function yields if is called outside active transaction.
+ */
+int
+gc_consumer_unregister(const struct tt_uuid *uuid);
+
+/**
+ * Synchronously update a gc consumer.
+ * On success, the function returns 0 and the gc consumer is updated along with
+ * persistent state. Otherwise, returns -1, persistent state is not modified.
+ * 
+ * NB: The function yields if is called outside active transaction.
+ */
+int
 gc_consumer_update(const struct tt_uuid *uuid, const struct vclock *vclock);
 
 bool
 gc_consumer_is_registered(const struct tt_uuid *uuid);
+
+bool
+gc_consumer_is_persistent(void);
 
 /**
  * Iterator over active registered consumers. The iterator is valid
@@ -408,6 +422,19 @@ gc_consumer_iterator_init(struct gc_consumer_iterator *it)
  */
 struct gc_consumer *
 gc_consumer_iterator_next(struct gc_consumer_iterator *it);
+
+/**
+ * The trigger invoked on replace in space _gc_consumers.
+ */
+int
+on_replace_dd_gc_consumers(struct trigger *trigger, void *event);
+
+/**
+ * A callback that should be invoked when the primary index of space
+ * _gc_consumers is created.
+ */
+int
+on_create_dd_gc_consumers_primary_index(void);
 
 #if defined(__cplusplus)
 } /* extern "C" */
