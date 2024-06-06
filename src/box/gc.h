@@ -377,11 +377,11 @@ void
 gc_consumer_unregister_anonymous(struct gc_consumer *consumer);
 
 /**
- * Advance the vclock tracked by a consumer and
+ * Update the vclock tracked by a consumer and
  * invoke garbage collection if needed.
  */
 void
-gc_consumer_advance(const struct tt_uuid *uuid, const struct vclock *vclock);
+gc_consumer_update(const struct tt_uuid *uuid, const struct vclock *vclock);
 
 bool
 gc_consumer_is_registered(const struct tt_uuid *uuid);
