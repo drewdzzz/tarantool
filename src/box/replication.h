@@ -427,6 +427,7 @@ struct replica {
 	enum applier_state applier_sync_state;
 	/* The latch is used to order replication requests. */
 	struct latch order_latch;
+	struct fiber *gc_consumer_advancer;
 };
 
 enum {

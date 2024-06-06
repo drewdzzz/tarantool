@@ -201,6 +201,8 @@ struct relay {
 		alignas(CACHELINE_SIZE)
 		/** Known relay vclock. */
 		struct vclock vclock;
+		struct vclock gc_vclock;
+		struct fiber *gc_consumer_advance_fiber;
 		/**
 		 * Transaction downstream lag to be accessed
 		 * from TX thread only.
@@ -223,6 +225,7 @@ struct relay {
 		 * save Raft requests. May be either 0 or 1.
 		 */
 		int raft_ready_msg;
+		bool gc_fiber_is_awake;
 		/** Whether raft_ready_msg holds a saved Raft message */
 		bool is_raft_push_pending;
 		/**
@@ -399,6 +402,11 @@ relay_stop(struct relay *relay)
 	relay->txn_lag = 0;
 	relay->tx.txn_lag = 0;
 	relay->tx.vclock_sync = 0;
+	if (relay->tx.gc_consumer_advance_fiber != NULL) {
+		fiber_cancel(relay->tx.gc_consumer_advance_fiber);
+		fiber_join(relay->tx.gc_consumer_advance_fiber);
+		relay->tx.gc_consumer_advance_fiber = NULL;
+	}
 }
 
 void
@@ -636,6 +644,30 @@ tx_status_update(struct cmsg *msg)
 	cpipe_push(&status->relay->relay_pipe, msg);
 }
 
+static int
+relay_gc_consumer_advance_fiber_f(va_list ap)
+{
+	struct relay *relay = va_arg(ap, struct relay *);
+
+	while (!fiber_is_cancelled()) {
+		relay->tx.gc_fiber_is_awake = false;
+		fiber_sleep(TIMEOUT_INFINITY);
+		relay->tx.gc_fiber_is_awake = true;
+		fiber_check_gc();
+		gc_consumer_update(&relay->replica->uuid, &relay->tx.gc_vclock);
+	}
+	return 0;
+}
+
+static void
+relay_gc_consumer_advance_fiber_start(struct relay *relay)
+{
+	relay->tx.gc_consumer_advance_fiber =
+		fiber_new_system_xc("relay", relay_gc_consumer_advance_fiber_f);
+	fiber_set_joinable(relay->tx.gc_consumer_advance_fiber, true);
+	fiber_start(relay->tx.gc_consumer_advance_fiber, relay);
+}
+
 /**
  * Update replica gc state in tx thread.
  */
@@ -643,7 +675,9 @@ static void
 tx_gc_advance(struct cmsg *msg)
 {
 	struct relay_gc_msg *m = (struct relay_gc_msg *)msg;
-	gc_consumer_update(&m->relay->replica->uuid, &m->vclock);
+	vclock_copy(&m->relay->tx.gc_vclock, &m->vclock);
+	if (!m->relay->tx.gc_fiber_is_awake)
+		fiber_wakeup(m->relay->tx.gc_consumer_advance_fiber);
 	free(m);
 }
 
@@ -1117,8 +1151,10 @@ relay_subscribe(struct replica *replica, struct iostream *io, uint64_t sync,
 	vclock_copy_ignore0(&relay->last_recv_ack.vclock, start_vclock);
 	relay->r = recovery_new(wal_dir(), false, start_vclock);
 	vclock_copy_ignore0(&relay->tx.vclock, start_vclock);
+	vclock_copy_ignore0(&relay->tx.gc_vclock, start_vclock);
 	relay->version_id = replica_version_id;
 	relay->id_filter |= replica_id_filter;
+	relay_gc_consumer_advance_fiber_start(relay);
 
 	struct cord cord;
 	int rc = cord_costart(&cord, "subscribe", relay_subscribe_f, relay);
