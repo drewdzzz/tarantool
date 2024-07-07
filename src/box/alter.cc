@@ -900,6 +900,8 @@ alter_space_commit(struct trigger *trigger, void *event)
 	return 0;
 }
 
+#include "memtx_tx.h"
+
 /**
  * Rollback all effects of space alter. This is
  * a transaction trigger, and it fires most likely
@@ -912,6 +914,7 @@ static int
 alter_space_rollback(struct trigger *trigger, void * /* event */)
 {
 	struct alter_space *alter = (struct alter_space *) trigger->data;
+	memtx_tx_on_space_delete(alter->new_space);
 	/* Rollback alter ops */
 	class AlterSpaceOp *op;
 	try {
@@ -1672,6 +1675,7 @@ on_drop_space_commit(struct trigger *trigger, void *event)
 	(void) event;
 	struct space *space = (struct space *)trigger->data;
 	space_remove_temporary_triggers(space);
+	memtx_tx_on_space_delete(space);
 	space_delete(space);
 	return 0;
 }

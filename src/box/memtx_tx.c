@@ -1197,61 +1197,6 @@ memtx_tx_story_link_top(struct memtx_story *new_top,
  * Unlink a @a story from history chain in @a index (in both directions),
  * where old_top was at the top of chain (that means that index itself
  * stores a pointer to story->tuple).
- * This function makes also changes in the index, replacing old_top->tuple
- * with the correct tuple (the next in chain, maybe NULL).
- */
-static void
-memtx_tx_story_unlink_top_common(struct memtx_story *story, uint32_t idx)
-{
-	assert(story != NULL);
-	assert(idx < story->index_count);
-	struct memtx_story_link *link = &story->link[idx];
-
-	assert(link->newer_story == NULL);
-	/*
-	 * Note that link[idx].in_index may not be the same as
-	 * story->space->index[idx] in case space is going to be deleted
-	 * in memtx_tx_on_space_delete(): during space alter operation we
-	 * swap all indexes to the new space object and instead use dummy
-	 * structs.
-	 */
-	struct index *index = story->link[idx].in_index;
-
-	struct memtx_story *old_story = link->older_story;
-	assert(old_story == NULL || old_story->link[idx].in_index == NULL);
-	struct tuple *old_tuple = old_story == NULL ? NULL : old_story->tuple;
-	struct tuple *removed, *unused;
-	if (index_replace(index, story->tuple, old_tuple,
-			  DUP_INSERT, &removed, &unused) != 0) {
-		diag_log();
-		unreachable();
-		panic("failed to rebind story in index");
-	}
-	assert(story->tuple == removed ||
-	       (removed == NULL && tuple_key_is_excluded(story->tuple,
-							 index->def->key_def,
-							 MULTIKEY_NONE)));
-	story->link[idx].in_index = NULL;
-	if (old_story != NULL)
-		old_story->link[idx].in_index = index;
-
-	/*
-	 * A space holds references to all his tuples.
-	 * All tuples that are physically in the primary index are referenced.
-	 * Thus we have to reference the tuple that was added to the primary
-	 * index and dereference the tuple that was removed from it.
-	 */
-	if (idx == 0) {
-		if (old_story != NULL)
-			memtx_tx_ref_to_primary(old_story);
-		memtx_tx_unref_from_primary(story);
-	}
-}
-
-/**
- * Unlink a @a story from history chain in @a index (in both directions),
- * where old_top was at the top of chain (that means that index itself
- * stores a pointer to story->tuple).
  * This is a light version of function, intended for the case when the
  * appropriate change in the index will be done later by caller.
  */
@@ -1286,7 +1231,7 @@ static void
 memtx_tx_story_unlink_top_on_space_delete(struct memtx_story *story,
 					  uint32_t idx)
 {
-	memtx_tx_story_unlink_top_common(story, idx);
+	memtx_tx_story_unlink_top_common_light(story, idx);
 	memtx_tx_story_unlink_top_on_space_delete_light(story, idx);
 }
 
@@ -1321,7 +1266,6 @@ memtx_tx_story_unlink_both_on_space_delete(struct memtx_story *story,
 	assert(idx < story->index_count);
 	struct memtx_story_link *link = &story->link[idx];
 	if (link->newer_story == NULL) {
-		assert(link->in_index != NULL);
 		memtx_tx_story_unlink_top_on_space_delete(story, idx);
 	} else {
 		memtx_tx_story_unlink_both_common(story, idx);
@@ -1383,38 +1327,6 @@ memtx_tx_story_full_unlink_on_space_delete(struct memtx_story *story)
 	for (uint32_t i = 0; i < story->index_count; i++) {
 		struct memtx_story_link *link = &story->link[i];
 		if (link->newer_story == NULL) {
-			/*
-			 * We are at the top of the chain. That means
-			 * that story->tuple might be in index. If the story
-			 * actually deletes the tuple and is present in index,
-			 * it must be deleted from index.
-			 */
-			if (story->del_psn > 0 && link->in_index != NULL) {
-				struct index *index = link->in_index;
-				struct tuple *removed, *unused;
-				if (index_replace(index, story->tuple, NULL,
-						  DUP_INSERT,
-						  &removed, &unused) != 0) {
-					diag_log();
-					unreachable();
-					panic("failed to rollback change");
-				}
-				struct key_def *key_def = index->def->key_def;
-				assert(story->tuple == removed ||
-				       (removed == NULL &&
-					tuple_key_is_excluded(story->tuple,
-							      key_def,
-							      MULTIKEY_NONE)));
-				(void)key_def;
-				link->in_index = NULL;
-				/*
-				 * All tuples in pk are referenced.
-				 * Once removed it must be unreferenced.
-				 */
-				if (i == 0)
-					memtx_tx_unref_from_primary(story);
-			}
-
 			memtx_tx_story_unlink(story, link->older_story, i);
 		} else {
 			/* Just unlink from list */
@@ -2928,11 +2840,32 @@ memtx_tx_on_index_delete(struct index *index)
 void
 memtx_tx_on_space_delete(struct space *space)
 {
-	while (!rlist_empty(&space->memtx_stories)) {
-		struct memtx_story *story
-			= rlist_first_entry(&space->memtx_stories,
-					    struct memtx_story,
-					    in_space_stories);
+	uint32_t index_count = space->index_count;
+
+	struct memtx_story *story, *tmp;
+	rlist_foreach_entry_safe(story, &space->memtx_stories, in_space_stories, tmp) {
+		assert(story->index_count == index_count);
+
+		/* Insert last prepared tuples to the indexes. */
+		for (uint32_t i = 0; i < index_count; i++) {
+			struct index *index = story->link[i].in_index;
+			if (index == NULL)
+				continue;
+			/* Mark as not in index. */
+			story->link[i].in_index = NULL;
+			struct memtx_story *last_prepared = story;
+			struct tuple *new_tuple = NULL;
+			while (last_prepared != NULL && last_prepared->add_psn == 0 &&
+			       last_prepared->add_stmt != NULL && last_prepared->add_stmt->txn != in_txn())
+				last_prepared = last_prepared->link[i].older_story;
+			if (last_prepared != NULL && last_prepared->del_psn == 0)
+				new_tuple = last_prepared->tuple;
+			// TODO: ref/unref from primary
+			struct tuple *unused;
+			if (index_replace(index, story->tuple, new_tuple, DUP_REPLACE_OR_INSERT, &unused, &unused) != 0)
+				panic("In memtx_tx_on_space_delete");
+		}
+
 		/*
 		 * Space is to be altered (not necessarily dropped). Since
 		 * this operation is considered to be DDL, all other
