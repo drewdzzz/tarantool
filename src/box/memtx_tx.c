@@ -2720,10 +2720,11 @@ memtx_tx_prepare_finalize(struct txn *txn)
 void
 memtx_tx_history_commit_stmt(struct txn_stmt *stmt)
 {
-	struct tuple *old_tuple, *new_tuple;
-	old_tuple = stmt->del_story == NULL ? NULL : stmt->del_story->tuple;
-	new_tuple = stmt->add_story == NULL ? NULL : stmt->add_story->tuple;
-	memtx_space_update_tuple_stat(stmt->space, old_tuple, new_tuple);
+	// TODO: deal with statistics
+	// struct tuple *old_tuple, *new_tuple;
+	// old_tuple = stmt->del_story == NULL ? NULL : stmt->del_story->tuple;
+	// new_tuple = stmt->add_story == NULL ? NULL : stmt->add_story->tuple;
+	// memtx_space_update_tuple_stat(stmt->space, old_tuple, new_tuple);
 
 	if (stmt->add_story != NULL) {
 		assert(stmt->add_story->add_stmt == stmt);
@@ -2925,14 +2926,54 @@ memtx_tx_on_index_delete(struct index *index)
 	memtx_tx_story_gc();
 }
 
+/** Temporary solution to ignore 'unused' warning.  */
+volatile bool always_false = false;
+
 void
 memtx_tx_on_space_delete(struct space *space)
 {
+	uint32_t index_count = space->index_count;
 	while (!rlist_empty(&space->memtx_stories)) {
 		struct memtx_story *story
 			= rlist_first_entry(&space->memtx_stories,
 					    struct memtx_story,
 					    in_space_stories);
+		assert(story->index_count == index_count);
+
+		/*
+		 * Insert last prepared tuples to the indexes
+		 * (or last change of ddl owner).
+		 */
+		for (uint32_t i = 0; i < index_count; i++) {
+			struct index *index = story->link[i].in_index;
+			if (index == NULL)
+				continue;
+			/* Mark as not in index. */
+			story->link[i].in_index = NULL;
+			struct memtx_story *last_prepared = story;
+			struct tuple *new_tuple = NULL;
+			while (last_prepared != NULL && last_prepared->add_psn == 0 &&
+			       last_prepared->add_stmt != NULL && last_prepared->add_stmt->txn != in_txn())
+				last_prepared = last_prepared->link[i].older_story;
+			if (last_prepared != NULL && last_prepared->del_psn == 0 )
+				new_tuple = last_prepared->tuple;
+			
+			if (i == 0) {
+				memtx_tx_unref_from_primary(story);
+				if (new_tuple != NULL)
+					memtx_tx_ref_to_primary(last_prepared);
+			}
+			struct tuple *unused;
+			if (index_replace(index, story->tuple, new_tuple, DUP_REPLACE_OR_INSERT, &unused, &unused) != 0)
+				panic("In memtx_tx_on_space_delete");
+		}
+
+		/** Temporary solution to ignore 'unused' warning.  */
+		if (always_false) {
+			memtx_tx_history_remove_stmt(NULL);
+			memtx_tx_story_full_unlink_on_space_delete(NULL);
+		}
+
 		/*
 		 * Space is to be altered (not necessarily dropped). Since
 		 * this operation is considered to be DDL, all other
@@ -2941,11 +2982,14 @@ memtx_tx_on_space_delete(struct space *space)
 		 * should be destroyed immediately.
 		 */
 		if (story->add_stmt != NULL)
-			memtx_tx_history_remove_stmt(story->add_stmt);
+			memtx_tx_story_unlink_added_by(story, story->add_stmt);
 		while (story->del_stmt != NULL)
-			memtx_tx_history_remove_stmt(story->del_stmt);
-		memtx_tx_story_full_unlink_on_space_delete(story);
+			memtx_tx_story_unlink_deleted_by(story, story->del_stmt);
 		for (uint32_t i = 0; i < story->index_count; i++) {
+			if (story->link[i].newer_story != NULL)
+				memtx_tx_story_unlink_both_common(story, i);
+			else
+				memtx_tx_story_unlink_top_common_light(story, i);
 			struct rlist *read_gaps = &story->link[i].read_gaps;
 			while (!rlist_empty(&story->link[i].read_gaps)) {
 				struct gap_item_base *item =

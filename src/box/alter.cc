@@ -61,6 +61,7 @@
 #include "authentication.h"
 #include "node_name.h"
 #include "core/func_adapter.h"
+#include "memtx_tx.h"
 
 /* {{{ Auxiliary functions and methods. */
 
@@ -900,6 +901,14 @@ alter_space_commit(struct trigger *trigger, void *event)
 	return 0;
 }
 
+static int
+alter_space_on_prepare(struct trigger *trigger, void * /* event */)
+{
+	struct alter_space *alter = (struct alter_space *) trigger->data;
+	memtx_tx_on_space_delete(alter->old_space);
+	return 0;
+}
+
 /**
  * Rollback all effects of space alter. This is
  * a transaction trigger, and it fires most likely
@@ -990,7 +999,8 @@ alter_space_do(struct txn_stmt *stmt, struct alter_space *alter)
 	 * free them in case of failure, because they are allocated on
 	 * the region.
 	 */
-	struct trigger *on_commit, *on_rollback;
+	struct trigger *on_commit, *on_rollback, *on_prepare;
+	on_prepare = txn_alter_trigger_new(alter_space_on_prepare, alter);
 	on_commit = txn_alter_trigger_new(alter_space_commit, alter);
 	on_rollback = txn_alter_trigger_new(alter_space_rollback, alter);
 	if (on_commit == NULL || on_rollback == NULL)
@@ -1066,6 +1076,7 @@ alter_space_do(struct txn_stmt *stmt, struct alter_space *alter)
 	 * finish or rollback the DDL depending on the results of
 	 * writing to WAL.
 	 */
+	txn_stmt_on_prepare(stmt, on_prepare);
 	txn_stmt_on_commit(stmt, on_commit);
 	txn_stmt_on_rollback(stmt, on_rollback);
 }

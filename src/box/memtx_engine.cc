@@ -598,6 +598,11 @@ memtx_engine_prepare(struct engine *engine, struct txn *txn)
 	}
 	if (txn->is_schema_changed)
 		memtx_tx_abort_all_for_ddl(txn);
+	struct txn_stmt *stmt;
+	stailq_foreach_entry(stmt, &txn->stmts, next) {
+		if (stmt->has_triggers && !rlist_empty(&stmt->on_prepare))
+			trigger_run(&stmt->on_prepare, stmt);
+	}
 	return 0;
 }
 
