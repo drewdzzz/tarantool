@@ -446,6 +446,20 @@ box_select(uint32_t space_id, uint32_t index_id,
  */
 typedef struct box_function_ctx box_function_ctx_t;
 
+/*
+ * C stored procedure signature
+ */
+typedef int (*box_function_t)(box_function_ctx_t *ctx,
+			      const char *args,
+			      const char *args_end);
+
+API_EXPORT void
+box_trigger_set(const char *event_name, const char *trigger_name,
+		box_function_t handler);
+
+API_EXPORT void
+box_trigger_del(const char *event_name, const char *trigger_name);
+
 /**
  * Return codes for IPROTO request handlers.
  */

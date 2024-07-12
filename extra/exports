@@ -115,6 +115,8 @@ box_sequence_set
 box_session_id
 box_session_push
 box_space_id_by_name
+box_trigger_set
+box_trigger_del
 box_truncate
 box_tuple_bsize
 box_tuple_compare

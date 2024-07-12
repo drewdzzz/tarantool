@@ -143,6 +143,9 @@ schema_module_reload(const char *package, const char *package_end);
 struct func_adapter *
 func_adapter_func_create(struct func *func, enum func_holder_type type);
 
+struct func_adapter *
+func_adapter_c_create(box_function_t func);
+
 #if defined(__cplusplus)
 } /* extern "C" */
 #endif /* defined(__cplusplus) */

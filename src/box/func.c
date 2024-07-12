@@ -685,3 +685,75 @@ func_adapter_func_create(struct func *pfunc, enum func_holder_type type)
 	func_pin(pfunc, &func->holder, type);
 	return &func->base;
 }
+
+/**
+ * Specialization of func_adapter for C functions.
+ */
+struct func_adapter_c {
+	/**
+	 * Base class.
+	 */
+	struct func_adapter base;
+	/**
+	 * Pointer to the function itself.
+	 */
+	box_function_t func;
+};
+
+/**
+ * Call the function with ports. Access check is not performed.
+ */
+static int
+func_adapter_c_call(struct func_adapter *base, struct port *args, struct port *ret)
+{
+	struct func_adapter_c *func_adapter = (struct func_adapter_c *)base;
+
+	/* Create and use local ports if passed ones are NULL. */
+	struct port args_local, ret_local;
+	if (args == NULL) {
+		port_c_create(&args_local);
+		args = &args_local;
+	}
+	if (ret == NULL)
+		ret = &ret_local;
+	port_c_create(ret);
+
+	uint32_t data_sz;
+	const char *data = port_get_msgpack(args, &data_sz);
+	if (data == NULL)
+		return -1;
+
+	struct box_function_ctx ctx = {.port = ret};
+	int rc = func_adapter->func(&ctx, data, data + data_sz);
+
+	/* Destroy local ports if they were used. */
+	if (args == &args_local)
+		port_destroy(args);
+	/* Port with returned values is initialized only on success. */
+	if (rc == 0 && ret == &ret_local)
+		port_destroy(ret);
+	return rc;
+}
+
+/**
+ * Virtual destructor.
+ */
+static void
+func_adapter_c_destroy(struct func_adapter *func)
+{
+	free(func);
+}
+
+struct func_adapter *
+func_adapter_c_create(box_function_t f)
+{
+	static const struct func_adapter_vtab vtab = {
+		.call = func_adapter_c_call,
+		.destroy = func_adapter_c_destroy,
+	};
+	struct func_adapter_c *func = xmalloc(sizeof(*func));
+	struct func_adapter base = {.vtab = &vtab};
+	func->base = base;
+	func->func = f;
+	return &func->base;
+}

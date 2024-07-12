@@ -6137,3 +6137,21 @@ box_free(void)
 	/* user_cache_free(); */
 	/* space_cache_destroy(); */
 }
+
+API_EXPORT void
+box_trigger_set(const char *event_name, const char *trigger_name,
+		box_function_t handler)
+{
+	struct func_adapter *func = func_adapter_c_create(handler);
+	struct event *event = event_get(event_name, true);
+	event_reset_trigger(event, trigger_name, func);
+}
+
+API_EXPORT void
+box_trigger_del(const char *event_name, const char *trigger_name)
+{
+	struct event *event = event_get(event_name, false);
+	if (event == NULL)
+		return;
+	event_reset_trigger(event, trigger_name, NULL);
+}
