@@ -14,14 +14,17 @@ Usage: tarantool test_engine.lua
 
 local fiber = require('fiber')
 local fio = require('fio')
+local ffi = require('ffi')
 local fun = require('fun')
 local json = require('json')
 local log = require('log')
 local math = require('math')
+local memcs_column_scanner = nil
 
 -- Tarantool datatypes.
 local datetime = require('datetime')
 local decimal = require('decimal')
+local msgpack = require('msgpack')
 local uuid = require('uuid')
 
 local test_dir_name = 'test_engine_dir'
@@ -84,6 +87,18 @@ local seed = params.seed or os.time()
 math.randomseed(seed)
 log.info(string.format('Random seed: %d', seed))
 
+-- Set package.cpath to allow loading C modules from the test directory.
+if arg_engine == 'memcs' then
+    local tarantool = require('tarantool')
+    local mod_pattern = '?.' .. tarantool.build.mod_format
+    local test_dir = fio.abspath(
+        fio.pathjoin(os.getenv('BUILDDIR') or '.',
+        'test', 'enterprise-luatest'))
+    local test_mod_cpath = fio.pathjoin(test_dir, mod_pattern)
+    package.cpath = test_mod_cpath .. ';' .. package.cpath
+    memcs_column_scanner = require('scanner_c_api_wrapper')
+end
+
 -- The table contains a whitelist of errors that will be ignored
 -- by test. Each item is a Lua pattern, special characters
 -- should be escaped: ^ $ ( ) % . [ ] * + - ?
@@ -116,6 +131,9 @@ local err_pat_whitelist = {
     "Failed to allocate %d+ bytes in [%w_]+ for [%w_]+",
     "Storage engine 'memtx' does not support cross%-engine transactions",
     "Storage engine 'vinyl' does not support cross%-engine transactions",
+    -- MEMCS
+    "Engine 'memcs' does not support secondary indexes",
+    "Engine 'memcs' does not support variable field count",
 }
 
 local function keys(t)
@@ -279,6 +297,70 @@ local tarantool_type = {
     ['uuid'] = {
         generator = uuid.new,
         operations = {'=', '!'},
+    },
+    ['int8'] = {
+        generator = function()
+            return math.random(-128, 127)
+        end,
+        operations = {'#', '+', '-', '&', '|', '^'},
+    },
+    ['uint8'] = {
+        generator = function()
+            return math.random(0, 255)
+        end,
+        operations = {'#', '+', '-', '&', '|', '^'},
+    },
+    ['int16'] = {
+        generator = function()
+            return math.random(-32768, 32767)
+        end,
+        operations = {'#', '+', '-', '&', '|', '^'},
+    },
+    ['uint16'] = {
+        generator = function()
+            return math.random(0, 65535)
+        end,
+        operations = {'#', '+', '-', '&', '|', '^'},
+    },
+    ['int32'] = {
+        generator = function()
+            return math.random(-2147483648, 2147483647)
+        end,
+        operations = {'#', '+', '-', '&', '|', '^'},
+    },
+    ['uint32'] = {
+        generator = function()
+            return math.random(0, 4294967296)
+        end,
+        operations = {'#', '+', '-', '&', '|', '^'},
+    },
+    ['int64'] = {
+        generator = function()
+            local v = math.random(-9223372036854775808, 9223372036854775807)
+            return ffi.cast('int64_t', v)
+        end,
+        operations = {'#', '+', '-', '&', '|', '^'},
+    },
+    ['uint64'] = {
+        generator = function()
+            local v = math.random(0, 18446744073709551616)
+            return ffi.cast('uint64_t', v)
+        end,
+        operations = {'#', '+', '-', '&', '|', '^'},
+    },
+    ['float32'] = {
+        generator = function()
+            local v = math.random() * 10^12
+            return ffi.cast('float', v)
+        end,
+        operations = {'-'},
+    },
+    ['float64'] = {
+        generator = function()
+            local v = math.random() * 10^12
+            return ffi.cast('double', v)
+        end,
+        operations = {'-'},
     },
 }
 
@@ -486,10 +568,46 @@ local function format_op(space, space_format)
     space:format(space_format)
 end
 
+local function memcs_scan_column_op(space, fields, key)
+    local mp_key = msgpack.encode(key)
+    local scanner = memcs_column_scanner.box_index_scanner(space.id, 0, fields, mp_key)
+    while true do
+        if math.random(1, 20) == 1 then
+            log.info('MEMCS_SCAN_COLUMN: finish early')
+            break
+        end
+        local batch_size = math.random(1, 10)
+        if math.random(1, 10) == 1 then
+            batch_size = math.random(11, 1e6)
+        end
+        log.info('MEMCS_SCAN_COLUMN: going to read batch of size ' .. batch_size)
+        local result = memcs_column_scanner.box_scanner_next(scanner, batch_size)
+        if result.row_count <= 10 then
+            log.info('MEMCS_SCAN_COLUMN: has read batch ' .. json.encode(result))
+        else
+            log.info('MEMCS_SCAN_COLUMN: has read big batch of size ' .. result.row_count)
+        end
+        if math.random(1, 2) == 1 then
+            log.info('MEMCS_SCAN_COLUMN: yield after batch')
+            fiber.sleep(0.0)
+        end
+        if result.row_count == 0 then
+            break
+        end
+    end
+    memcs_column_scanner.box_scanner_free(scanner)
+end
+
+-- Only fullscan makes sense for MEMCS
+local function memcs_setup()
+    tarantool_indices.TREE.iterator_type = {'ALL'}
+end
+
 local function setup(engine_name, space_id_func, test_dir, verbose)
     log.info('SETUP')
     assert(engine_name == 'memtx' or
-           engine_name == 'vinyl')
+           engine_name == 'vinyl' or
+           engine_name == 'memcs')
     -- Configuration reference (box.cfg),
     -- https://www.tarantool.io/en/doc/latest/reference/configuration/
     local box_cfg_options = {
@@ -528,6 +646,8 @@ local function setup(engine_name, space_id_func, test_dir, verbose)
     box.cfg(box_cfg_options)
     log.info('FINISH BOX.CFG')
 
+    memcs_setup()
+
     log.info('CREATE A SPACE')
     local space_format = random_space_format()
     -- TODO: support `constraint`.
@@ -539,13 +659,18 @@ local function setup(engine_name, space_id_func, test_dir, verbose)
         if_not_exists = oneof({true, false}),
         is_local = oneof({true, false}),
     }
-    if space_opts.engine ~= 'vinyl' then
+    if space_opts.engine == 'memcs' then
+        space_opts.field_count = table.getn(space_format)
+    end
+    if space_opts.engine == 'memtx' then
         space_opts.temporary = oneof({true, false})
     end
     local space_name = ('test_%d'):format(space_id_func())
     local space = box.schema.space.create(space_name, space_opts)
     index_create_op(space)
-    index_create_op(space)
+    if space_opts.engine ~= 'memcs' then
+        index_create_op(space)
+    end
     log.info('FINISH SETUP')
     return space
 end
@@ -588,7 +713,7 @@ local function index_opts(space, is_primary)
             end
         end):totable()
 
-    if space.engine == 'vinyl' then
+    if space.engine == 'vinyl' or space.engine == 'memcs' then
         indices = {'TREE'}
     end
 
@@ -705,9 +830,13 @@ local function index_get_op(_space, idx, key)
     idx:get(key)
 end
 
-local function index_select_op(_space, idx, key)
+local function index_select_op(space, idx, key)
     assert(idx)
     assert(key)
+    -- Only fullscan makes sense for memcs
+    if space.engine == 'memcs' then
+        key = nil
+    end
     idx:select(key)
 end
 
@@ -985,6 +1114,30 @@ local ops = {
     SNAPSHOT_OP = {
         func = box_snapshot,
         args = function(_) return end,
+    },
+
+    -- MEMCS
+    MEMCS_SCAN_COLUMN_OP = {
+        func = memcs_scan_column_op,
+        args = function(space)
+            local field_num = #space:format()
+            local idx = space.index[0]
+            local key = {}
+            if math.random(1, 2) == 1 then
+                key = random_key(space, idx)
+            end
+            local fields = {}
+            local prob = math.random(2, field_num)
+            for i = 1, field_num do
+                if math.random(1, prob) == 1 then
+                    table.insert(fields, i)
+                end
+            end
+            if #fields == 0 then
+                table.insert(fields, math.random(1, field_num))
+            end
+            return fields, key
+        end,
     },
 }
 
