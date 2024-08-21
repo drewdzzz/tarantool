@@ -1205,6 +1205,13 @@ tree_iterator_position_func(struct iterator *it, const char **pos,
 						pos, size);
 }
 
+static inline bool
+memtx_tree_tuple_key_is_excluded(struct tuple *tuple, struct key_def *def,
+				 int multikey_idx)
+{
+	return !memtx_tx_manager_use_mvcc_engine &&
+		tuple_key_is_excluded(tuple, def, multikey_idx);
+}
 template <bool USE_HINT>
 static int
 memtx_tree_index_replace(struct index *base, struct tuple *old_tuple,
@@ -1216,7 +1223,7 @@ memtx_tree_index_replace(struct index *base, struct tuple *old_tuple,
 	struct key_def *key_def = base->def->key_def;
 	struct key_def *cmp_def = memtx_tree_cmp_def(&index->tree);
 	if (new_tuple != NULL &&
-	    !tuple_key_is_excluded(new_tuple, key_def, MULTIKEY_NONE)) {
+	    !memtx_tree_tuple_key_is_excluded(new_tuple, key_def, MULTIKEY_NONE)) {
 		struct memtx_tree_data<USE_HINT> new_data;
 		new_data.tuple = new_tuple;
 		if (USE_HINT)
@@ -1247,7 +1254,7 @@ memtx_tree_index_replace(struct index *base, struct tuple *old_tuple,
 		}
 	}
 	if (old_tuple != NULL &&
-	    !tuple_key_is_excluded(old_tuple, key_def, MULTIKEY_NONE)) {
+	    !memtx_tree_tuple_key_is_excluded(old_tuple, key_def, MULTIKEY_NONE)) {
 		struct memtx_tree_data<USE_HINT> old_data;
 		old_data.tuple = old_tuple;
 		if (USE_HINT)
@@ -1326,7 +1333,7 @@ memtx_tree_index_replace_multikey_rollback(struct memtx_tree_index<true> *index,
 		uint32_t multikey_count =
 			tuple_multikey_count(replaced_tuple, cmp_def);
 		for (int i = 0; (uint32_t) i < multikey_count; i++) {
-			if (tuple_key_is_excluded(replaced_tuple, key_def, i))
+			if (memtx_tree_tuple_key_is_excluded(replaced_tuple, key_def, i))
 				continue;
 			data.hint = i;
 			memtx_tree_insert(&index->tree, data, NULL, NULL);
@@ -1338,7 +1345,7 @@ memtx_tree_index_replace_multikey_rollback(struct memtx_tree_index<true> *index,
 	 */
 	data.tuple = new_tuple;
 	for (int i = 0; i < err_multikey_idx; i++) {
-		if (tuple_key_is_excluded(new_tuple, key_def, i))
+		if (memtx_tree_tuple_key_is_excluded(new_tuple, key_def, i))
 			continue;
 		data.hint = i;
 		memtx_tree_delete_value(&index->tree, data, NULL);
@@ -1411,7 +1418,7 @@ memtx_tree_index_replace_multikey(struct index *base, struct tuple *old_tuple,
 			tuple_multikey_count(new_tuple, cmp_def);
 		for (; (uint32_t) multikey_idx < multikey_count;
 		     multikey_idx++) {
-			if (tuple_key_is_excluded(new_tuple, key_def,
+			if (memtx_tree_tuple_key_is_excluded(new_tuple, key_def,
 						  multikey_idx))
 				continue;
 			bool is_multikey_conflict;
@@ -1445,7 +1452,7 @@ memtx_tree_index_replace_multikey(struct index *base, struct tuple *old_tuple,
 		uint32_t multikey_count =
 			tuple_multikey_count(old_tuple, cmp_def);
 		for (int i = 0; (uint32_t) i < multikey_count; i++) {
-			if (tuple_key_is_excluded(old_tuple, key_def, i))
+			if (memtx_tree_tuple_key_is_excluded(old_tuple, key_def, i))
 				continue;
 			data.hint = i;
 			memtx_tree_delete_value(&index->tree, data, NULL);
@@ -1547,7 +1554,7 @@ memtx_tree_func_index_replace(struct index *base, struct tuple *old_tuple,
 		struct key_def *key_def = index_def->key_def;
 		while ((err = key_list_iterator_next(&it, &key)) == 0 &&
 			key != NULL) {
-			if (tuple_key_is_excluded(key, key_def, MULTIKEY_NONE))
+			if (memtx_tree_tuple_key_is_excluded(key, key_def, MULTIKEY_NONE))
 				continue;
 			/* Perform insertion, log it in list. */
 			undo = func_key_undo_new(region);
@@ -1811,7 +1818,7 @@ template <bool USE_HINT>
 static int
 memtx_tree_index_build_next(struct index *base, struct tuple *tuple)
 {
-	if (tuple_key_is_excluded(tuple, base->def->key_def, MULTIKEY_NONE))
+	if (memtx_tree_tuple_key_is_excluded(tuple, base->def->key_def, MULTIKEY_NONE))
 		return 0;
 	struct memtx_tree_index<USE_HINT> *index =
 		(struct memtx_tree_index<USE_HINT> *)base;
@@ -1828,7 +1835,7 @@ memtx_tree_index_build_next_multikey(struct index *base, struct tuple *tuple)
 	uint32_t multikey_count = tuple_multikey_count(tuple, cmp_def);
 	for (uint32_t multikey_idx = 0; multikey_idx < multikey_count;
 	     multikey_idx++) {
-		if (tuple_key_is_excluded(tuple, base->def->key_def,
+		if (memtx_tree_tuple_key_is_excluded(tuple, base->def->key_def,
 					  multikey_idx))
 			continue;
 		if (memtx_tree_index_build_array_append(index, tuple,
@@ -1861,7 +1868,7 @@ memtx_tree_func_index_build_next(struct index *base, struct tuple *tuple)
 	struct tuple *key;
 	uint32_t insert_idx = index->build_array_size;
 	while (key_list_iterator_next(&it, &key) == 0 && key != NULL) {
-		if (tuple_key_is_excluded(key, key_def, MULTIKEY_NONE))
+		if (memtx_tree_tuple_key_is_excluded(key, key_def, MULTIKEY_NONE))
 			continue;
 		if (memtx_tree_index_build_array_append(index, tuple,
 							(hint_t)key) != 0)
