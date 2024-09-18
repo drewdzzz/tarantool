@@ -719,7 +719,16 @@ txn_alter_trigger_new(trigger_f run, void *data)
 	return trigger;
 }
 
+/**
+ * List of all alive alter_space objects.
+ */
+static RLIST_HEAD(alter_space_list);
+
 struct alter_space {
+	/** Link in alter_space_list. */
+	struct rlist in_list;
+	/** Transaction doing this alter. */
+	struct txn *txn;
 	/** List of alter operations */
 	struct rlist ops;
 	/** Definition of the new space - space_def. */
@@ -764,6 +773,8 @@ alter_space_new(struct space *old_space)
 		return NULL;
 	}
 	alter = (struct alter_space *)memset(alter, 0, size);
+	rlist_add_entry(&alter_space_list, alter, in_list);
+	alter->txn = txn;
 	rlist_create(&alter->ops);
 	alter->old_space = old_space;
 	alter->space_def = space_def_dup(alter->old_space->def);
@@ -779,6 +790,7 @@ alter_space_new(struct space *old_space)
 static void
 alter_space_delete(struct alter_space *alter)
 {
+	rlist_del_entry(alter, in_list);
 	/* Destroy the ops. */
 	while (! rlist_empty(&alter->ops)) {
 		AlterSpaceOp *op = rlist_shift_entry(&alter->ops,
@@ -1075,6 +1087,38 @@ alter_space_do(struct txn_stmt *stmt, struct alter_space *alter)
 	txn_stmt_on_rollback(stmt, on_rollback);
 }
 
+/**
+ * Guard for allowing transaction yield during long DDL. Throws an exception
+ * when yield is not safe - if creation of `struct space` that is being
+ * altered is not committed, it will be deleted in the case of rollback,
+ * right from under our feet. To prevent such situations, allow potentially
+ * yielding DDL only when we are sure that the space won't be deleted.
+ */
+class AlterYieldGuard {
+public:
+	AlterYieldGuard(struct space *space) {
+		struct txn *txn = in_txn();
+		struct alter_space *alter;
+		rlist_foreach_entry(alter, &alter_space_list, in_list) {
+			/** Skip own alter. */
+			if (alter->txn == txn)
+				continue;
+			/** We cannot alter space that is already gone. */
+			assert(alter->old_space != space);
+			if (alter->new_space == space) {
+				tnt_raise(ClientError, ER_ALTER_SPACE,
+					  space_name(space),
+					  "another modification is being "
+					  "committed");
+			}
+		}
+		txn_can_yield(txn, true);
+	}
+	~AlterYieldGuard() {
+		txn_can_yield(in_txn(), false);
+	}
+};
+
 /* }}}  */
 
 /* {{{ AlterSpaceOp descendants - alter operations, such as Add/Drop index */
@@ -1095,11 +1139,7 @@ static inline void
 space_check_format_with_yield(struct space *space,
 			      struct tuple_format *format)
 {
-	struct txn *txn = in_txn();
-	assert(txn != NULL);
-	(void) txn_can_yield(txn, true);
-	auto yield_guard =
-		make_scoped_guard([=] { txn_can_yield(txn, false); });
+	AlterYieldGuard guard(space);
 	space_check_format_xc(space, format);
 }
 
@@ -1390,11 +1430,7 @@ static inline void
 space_build_index_with_yield(struct space *old_space, struct space *new_space,
 			     struct index *new_index)
 {
-	struct txn *txn = in_txn();
-	assert(txn != NULL);
-	(void) txn_can_yield(txn, true);
-	auto yield_guard =
-		make_scoped_guard([=] { txn_can_yield(txn, false); });
+	AlterYieldGuard guard(old_space);
 	space_build_index_xc(old_space, new_space, new_index);
 }
 
