@@ -671,6 +671,24 @@ gc_checkpoint_fiber_f(va_list ap)
 	return 0;
 }
 
+/**
+ * Return the checkpoint with exact @vclock. NULL is returned if
+ * checkpoint is not found.
+ */
+struct gc_checkpoint *
+gc_checkpoint_at_vclock(const struct vclock *vclock)
+{
+	struct gc_checkpoint *checkpoint;
+	gc_foreach_checkpoint(checkpoint) {
+		int rc = vclock_compare(&checkpoint->vclock, vclock);
+		if (rc > 0)
+			break;
+		if (rc == 0)
+			return checkpoint;
+	}
+	return NULL;
+}
+
 void
 gc_ref_checkpoint(struct gc_checkpoint *checkpoint,
 		  struct gc_checkpoint_ref *ref, const char *format, ...)

@@ -4428,6 +4428,44 @@ box_process_fetch_snapshot(struct iostream *io,
 	/* Check permissions */
 	access_check_universe_xc(PRIV_R);
 
+	/* Forbid replication with disabled WAL */
+	if (wal_mode() == WAL_NONE) {
+		tnt_raise(ClientError, ER_UNSUPPORTED, "Replication",
+			  "wal_mode = 'none'");
+	}
+
+	/* Find checkpoint for checkpoint join. */
+	struct checkpoint_cursor cursor;
+	struct checkpoint_cursor *cursor_ptr = NULL;
+	struct gc_checkpoint *checkpoint = NULL;
+	const struct vclock *gc_vclock = instance_vclock;
+	if (req.is_checkpoint_join) {
+		if (vclock_is_set(&req.checkpoint_vclock)) {
+			/*
+			 * Replica requested specific snapshot. This happens,
+			 * when connection breaks and replica wants to continue
+			 * fetching files from the same place.
+			 */
+			checkpoint =
+				gc_checkpoint_at_vclock(&req.checkpoint_vclock);
+		} else {
+			checkpoint = gc_last_checkpoint();
+		}
+		/*
+		 * Implicitly requested checkpoint was probably garbage
+		 * collected, which means that we cannot send any data to
+		 * replica, as rebootstrap must be done: replica must explicitly
+		 * request latest checkpoint.
+		 */
+		if (checkpoint == NULL)
+			tnt_raise(ClientError, ER_MISSING_SNAPSHOT);
+		memset(&cursor, 0, sizeof(cursor));
+		cursor.vclock = &checkpoint->vclock;
+		cursor.start_lsn = req.checkpoint_lsn;
+		cursor_ptr = &cursor;
+		gc_vclock = &checkpoint->vclock;
+	}
+
 	struct replica *replica = NULL;
 	if (!tt_uuid_is_nil(&req.instance_uuid)) {
 		replica = replica_by_uuid(&req.instance_uuid);
@@ -4443,30 +4481,39 @@ box_process_fetch_snapshot(struct iostream *io,
 		if (replica->gc != NULL)
 			gc_consumer_unregister(replica->gc);
 		replica->gc = gc_consumer_register(
-			instance_vclock, GC_CONSUMER_REPLICA, &replica->uuid);
+			gc_vclock, GC_CONSUMER_REPLICA, &replica->uuid);
 		/* Persist consumer before sending data. */
 		if (gc_consumer_persist(replica->gc) != 0)
 			diag_raise();
+		/* Clear checkpoint reference, if any. */
+		if (replica->gc_checkpoint_ref != NULL) {
+			gc_unref_checkpoint(replica->gc_checkpoint_ref);
+			replica->gc_checkpoint_ref = NULL;
+		}
 	}
 
-	/* Forbid replication with disabled WAL */
-	if (wal_mode() == WAL_NONE) {
-		tnt_raise(ClientError, ER_UNSUPPORTED, "Replication",
-			  "wal_mode = 'none'");
-	}
-
-	say_info("sending read-view to replica at %s", sio_socketname(io->fd));
-	/* Used for checkpoint initial join. */
-	struct checkpoint_cursor cursor;
-	struct checkpoint_cursor *cursor_ptr = NULL;
-	if (req.is_checkpoint_join) {
-		memset(&cursor, 0, sizeof(cursor));
-		cursor.vclock = &req.checkpoint_vclock;
-		cursor.start_lsn = req.checkpoint_lsn;
-		cursor_ptr = &cursor;
+	struct gc_checkpoint_ref checkpoint_ref;
+	auto gc_checkpoint_ref_guard = make_scoped_guard([&]() {
+		gc_unref_checkpoint(&checkpoint_ref);
+	});
+	gc_checkpoint_ref_guard.is_active = false;
+	if (checkpoint != NULL) {
+		if (replica == NULL) {
+			gc_ref_checkpoint(checkpoint, &checkpoint_ref,
+					  "checkpoint join");
+			gc_checkpoint_ref_guard.is_active = true;
+		} else {
+			replica->gc_checkpoint_ref =
+				xalloc_object(struct gc_checkpoint_ref);
+			gc_ref_checkpoint(checkpoint,
+					  replica->gc_checkpoint_ref,
+					  "checkpoint join of replica %s",
+					  tt_uuid_str(&replica->uuid));
+		}
 	}
 
 	/* Send the snapshot data to the instance. */
+	say_info("sending read-view to replica at %s", sio_socketname(io->fd));
 	struct vclock start_vclock;
 	relay_initial_join(io, header->sync, &start_vclock, req.version_id,
 			   cursor_ptr, replica);
@@ -4902,6 +4949,11 @@ box_process_subscribe(struct iostream *io, const struct xrow_header *header)
 	/* Persist consumer before sending data. */
 	if (gc_consumer_persist(replica->gc) != 0)
 		diag_raise();
+	/* Clear checkpoint reference, if any. */
+	if (replica->gc_checkpoint_ref != NULL) {
+		gc_unref_checkpoint(replica->gc_checkpoint_ref);
+		replica->gc_checkpoint_ref = NULL;
+	}
 	/*
 	 * Send a response to SUBSCRIBE request, tell
 	 * the replica how many rows we have in stock for it,

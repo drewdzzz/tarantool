@@ -493,6 +493,8 @@ relay_initial_join(struct iostream *io, uint64_t sync, struct vclock *vclock,
 	ctx.send_meta = replica_version_id > 0;
 	ctx.vclock = vclock;
 	ctx.cursor = cursor;
+	if (cursor != NULL)
+		ctx.vclock = cursor->vclock;
 	engine_prepare_join_xc(&ctx);
 	auto join_guard = make_scoped_guard([&] {
 		engine_complete_join(&ctx);
