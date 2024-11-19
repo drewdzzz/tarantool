@@ -609,6 +609,7 @@ static int
 memtx_engine_begin(struct engine *engine, struct txn *txn)
 {
 	(void)engine;
+	memtx_tx_register_txn(txn);
 	txn_can_yield(txn, memtx_tx_manager_use_mvcc_engine);
 	return 0;
 }
@@ -655,6 +656,7 @@ memtx_engine_commit(struct engine *engine, struct txn *txn)
 						space->upgrade, old_tuple);
 		}
 	}
+	memtx_tx_clean_txn(txn);
 }
 
 static void
@@ -709,6 +711,13 @@ memtx_engine_rollback_statement(struct engine *engine, struct txn *txn,
 		tuple_ref(old_tuple);
 	if (new_tuple != NULL)
 		tuple_unref(new_tuple);
+}
+
+static void
+memtx_engine_rollback(struct engine *engine, struct txn *txn)
+{
+	(void)engine;
+	memtx_tx_clean_txn(txn);
 }
 
 static int
@@ -1569,7 +1578,7 @@ static const struct engine_vtab memtx_engine_vtab = {
 	/* .prepare = */ memtx_engine_prepare,
 	/* .commit = */ memtx_engine_commit,
 	/* .rollback_statement = */ memtx_engine_rollback_statement,
-	/* .rollback = */ generic_engine_rollback,
+	/* .rollback = */ memtx_engine_rollback,
 	/* .switch_to_ro = */ generic_engine_switch_to_ro,
 	/* .bootstrap = */ memtx_engine_bootstrap,
 	/* .begin_initial_recovery = */ memtx_engine_begin_initial_recovery,
