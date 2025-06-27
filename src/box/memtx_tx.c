@@ -1332,6 +1332,37 @@ memtx_tx_story_unlink(struct memtx_story *story,
 }
 
 /**
+ *
+ * NB: keep in mind that replace uses malloc when there is no enough
+ *     memory on arena.
+ */
+static void
+memtx_tx_index_replace_nofail(struct index *index, struct tuple *old_tuple,
+			      struct tuple *new_tuple,
+			      enum dup_replace_mode mode,
+			      struct tuple **result, struct tuple **successor)
+{
+	/*
+	 * In order to avoid OOM, we set TXN_STMT_ROLLBACK flag if it's
+	 * not already set. Semantically, this flag also makes sense - we
+	 * actually rollback all in-progress transactions here.
+	 */
+	bool is_stmt_rollback = txn_has_flag(in_txn(), TXN_STMT_ROLLBACK);
+	if (!is_stmt_rollback)
+		txn_set_flags(in_txn(), TXN_STMT_ROLLBACK);
+
+	if (index_replace(index, old_tuple, new_tuple,
+			  mode, result, successor) != 0) {
+		diag_log();
+		unreachable();
+		panic("failed to rebind story in index");
+	}
+
+	if (!is_stmt_rollback)
+		txn_clear_flags(in_txn(), TXN_STMT_ROLLBACK);
+}
+
+/**
  * Link a @a new_top with @a old_top in @a idx (in both directions), where
  * @a old_top was at the top of chain.
  * There are two different but close in implementation scenarios in which
@@ -1373,12 +1404,9 @@ memtx_tx_story_link_top(struct memtx_story *new_top,
 		/* Make the change in index. */
 		struct index *index = old_link->in_index;
 		struct tuple *removed, *unused;
-		if (index_replace(index, old_top->tuple, new_top->tuple,
-				  DUP_REPLACE, &removed, &unused) != 0) {
-			diag_log();
-			unreachable();
-			panic("failed to rebind story in index");
-		}
+		memtx_tx_index_replace_nofail(index, old_top->tuple,
+					      new_top->tuple, DUP_REPLACE,
+					      &removed, &unused);
 		assert(old_top->tuple == removed);
 	}
 
@@ -1561,13 +1589,10 @@ memtx_tx_story_full_unlink_story_gc_step(struct memtx_story *story)
 			if (story->del_psn > 0 && link->in_index != NULL) {
 				struct index *index = link->in_index;
 				struct tuple *removed, *unused;
-				if (index_replace(index, story->tuple, NULL,
-						  DUP_INSERT,
-						  &removed, &unused) != 0) {
-					diag_log();
-					unreachable();
-					panic("failed to rollback change");
-				}
+				memtx_tx_index_replace_nofail(
+					index, story->tuple, NULL,
+					DUP_INSERT, &removed, &unused);
+
 				struct key_def *key_def = index->def->key_def;
 				assert(story->tuple == removed ||
 				       (removed == NULL &&
@@ -3317,14 +3342,9 @@ memtx_tx_invalidate_space(struct space *space, struct txn *ddl_owner)
 				continue;
 
 			struct tuple *unused;
-			if (index_replace(index, story->tuple, new_tuple,
-					  DUP_REPLACE, &unused,
-					  &unused) != 0) {
-				diag_log();
-				unreachable();
-				panic("failed to rebind story in index on "
-				      "space invalidation");
-			}
+			memtx_tx_index_replace_nofail(
+				index, story->tuple, new_tuple,
+				DUP_REPLACE, &unused, &unused);
 
 			if (i == 0) {
 				if (new_tuple != NULL) {
