@@ -105,6 +105,12 @@ memtx_block_data(struct memtx_block *block)
 	return (char *)&block->header + data_offset;
 }
 
+static inline size_t
+memtx_block_data_size(struct memtx_block *block)
+{
+	return tuple_bsize(&block->header);
+}
+
 /**
  * List of blocks owned by a read view.
  *
