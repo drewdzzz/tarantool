@@ -855,8 +855,8 @@ generic_space_swap_index(struct space *old_space, struct space *new_space,
 	 * since the old space is going to be invalidated and transactional
 	 * metadata is required to do it correctly.
 	 */
-	rlist_swap(&old_space->index_map[old_index_id]->read_gaps,
-		   &new_space->index_map[new_index_id]->read_gaps);
+	SWAP(old_space->index_map[old_index_id]->read_gaps,
+	     new_space->index_map[new_index_id]->read_gaps);
 }
 
 void

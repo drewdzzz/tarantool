@@ -31,6 +31,7 @@
  * SUCH DAMAGE.
  */
 #include <stdbool.h>
+#include "small/rb.h"
 #include "small/rlist.h"
 #include "trigger.h"
 #include "trivia/util.h"
@@ -693,6 +694,8 @@ struct index_vtab {
 	void (*end_build)(struct index *index);
 };
 
+typedef rb_tree(struct gap_item_base) gap_item_set_t;
+
 struct index {
 	/** Virtual function table. */
 	const struct index_vtab *vtab;
@@ -714,7 +717,7 @@ struct index {
 	 * NB: do not add items to the end of the list - it is reserved for
 	 * full count items.
 	 */
-	struct rlist read_gaps;
+	gap_item_set_t *read_gaps;
 };
 
 /**
