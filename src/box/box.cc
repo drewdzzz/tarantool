@@ -41,6 +41,7 @@
 #include <say.h>
 #include <scoped_guard.h>
 #include "identifier.h"
+#include "assoc.h"
 #include "app_threads.h"
 #include "iproto.h"
 #include "iproto_constants.h"
@@ -2165,6 +2166,124 @@ box_check_memtx_sort_threads(void)
 				     " equal to %d", TT_SORT_THREADS_MAX));
 }
 
+/**
+ * Per-user session idle timeout, keyed by user name. Lives in the TX thread.
+ * Keyed by name (not user id) on purpose: no need to handle DDL operations
+ * like user rename.
+ */
+static struct mh_strnptr_t *session_idle_timeout_hash;
+
+/** Drop all entries and free the session_idle_timeout hash. */
+static void
+session_idle_timeout_hash_clear(struct mh_strnptr_t *hash)
+{
+	assert(hash != NULL);
+	mh_int_t k;
+	mh_foreach(hash, k) {
+		struct mh_strnptr_node_t *n = mh_strnptr_node(hash, k);
+		free((void *)n->str);
+		free(n->val);
+	}
+	mh_strnptr_delete(hash);
+}
+
+/**
+ * Validate box.cfg.session_idle_timeout. If @a build is true, also
+ * (re)build the name-keyed hash from the validated config; otherwise
+ * only validate (check mode). Validation and build share a single pass
+ * so the config is parsed identically in both modes. Returns 0 on
+ * success, -1 on error (diag set).
+ */
+static struct mh_strnptr_t *
+box_get_session_idle_timeout(void)
+{
+	if (!cfg_istable("session_idle_timeout")) {
+		if (cfg_isnil("session_idle_timeout"))
+			return NULL; /* Nil is an empty map: no timeouts. */
+		tnt_raise(ClientError, ER_CFG, "session_idle_timeout",
+			  "must be a map of {[username] = timeout, ...}");
+	}
+
+	/* Push `session_idle_timeout` option onto Lua stack. */
+	struct lua_State *L = tarantool_L;
+	int top = lua_gettop(L);
+	lua_getglobal(L, "box");
+	lua_getfield(L, -1, "cfg");
+	lua_getfield(L, -1, "session_idle_timeout");
+
+	struct mh_strnptr_t *result = mh_strnptr_new();
+
+	auto guard = make_scoped_guard([result, L, top]() {
+		lua_settop(L, top);
+		session_idle_timeout_hash_clear(result);
+	});
+
+	lua_pushnil(L);
+	while (lua_next(L, -2) != 0) {
+		/* Key is at -2, value at -1. */
+		if (lua_type(L, -2) != LUA_TSTRING)
+			tnt_raise(ClientError, ER_CFG, "session_idle_timeout",
+				  "user name must be a string");
+		if (!lua_isnumber(L, -1))
+			tnt_raise(ClientError, ER_CFG, "session_idle_timeout",
+				  "timeout must be a number");
+		double timeout = lua_tonumber(L, -1);
+		if (timeout < 0)
+			tnt_raise(ClientError, ER_CFG, "session_idle_timeout",
+				  "timeout must be >= 0");
+
+		if (timeout > 0) {
+			size_t name_len;
+			const char *name = lua_tolstring(L, -2, &name_len);
+			char *key = (char *)xstrdup(name);
+			double *val = (double *)xmalloc(sizeof(*val));
+			*val = timeout;
+			struct mh_strnptr_node_t n = {
+				key, (uint32_t)name_len,
+				mh_strn_hash(key, name_len), val
+			};
+			struct mh_strnptr_node_t prev;
+			struct mh_strnptr_node_t *prev_ptr = &prev;
+			mh_strnptr_put(result, &n, &prev_ptr, NULL);
+			assert(prev_ptr == NULL);
+		}
+		/* Pop the value, keep the key for the next lua_next. */
+		lua_pop(L, 1);
+	}
+	guard.is_active = false;
+	lua_settop(L, top);
+	return result;
+}
+
+/**
+ * Checks whether session_idle_timeout configuration parameter is correct.
+ * Expected format: a map of {username = timeout}.
+ */
+static void
+box_check_session_idle_timeout(void)
+{
+	/* Simply call getter to use its checkers. */
+	struct mh_strnptr_t *unused = box_get_session_idle_timeout();
+	if (unused != NULL)
+		session_idle_timeout_hash_clear(unused);
+}
+
+double
+box_session_idle_timeout(uint8_t auth_token)
+{
+	if (session_idle_timeout_hash == NULL)
+		return 0;
+	struct user *user = user_find_by_token(auth_token);
+	if (user == NULL)
+		return 0;
+	const char *name = user->def->name;
+	mh_int_t i = mh_strnptr_find_str(session_idle_timeout_hash, name,
+					 strlen(name));
+	if (i == mh_end(session_idle_timeout_hash))
+		return 0;
+	return *(double *)mh_strnptr_node(session_idle_timeout_hash, i)->val;
+}
+
 void
 box_check_config(void)
 {
@@ -2249,6 +2368,7 @@ box_check_config(void)
 	if (box_check_txn_isolation() == txn_isolation_level_MAX)
 		diag_raise();
 	box_check_memtx_sort_threads();
+	box_check_session_idle_timeout();
 }
 
 int
@@ -3284,6 +3404,16 @@ box_set_net_msg_max(void)
 	fiber_pool_set_max_size(&tx_fiber_pool,
 				new_iproto_msg_max *
 				IPROTO_FIBER_POOL_SIZE_FACTOR);
+}
+
+void
+box_set_session_idle_timeout(void)
+{
+	if (session_idle_timeout_hash != NULL) {
+		session_idle_timeout_hash_clear(session_idle_timeout_hash);
+		session_idle_timeout_hash = NULL;
+	}
+	session_idle_timeout_hash = box_get_session_idle_timeout();
 }
 
 int
@@ -5735,6 +5865,7 @@ box_cfg_xc(void)
 	if (box_set_prepared_stmt_cache_size() != 0)
 		diag_raise();
 	box_set_net_msg_max();
+	box_set_session_idle_timeout();
 	box_set_readahead();
 	box_set_too_long_threshold();
 	box_set_replication_timeout();

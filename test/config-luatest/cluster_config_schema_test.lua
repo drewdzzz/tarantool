@@ -74,6 +74,7 @@ local instance_config_fields = {
     'fiber',
     'log',
     'iproto',
+    'session',
     'database',
     'sql',
     'memtx',
@@ -387,6 +388,9 @@ g.test_defaults = function()
             password_min_length = 0,
         } or {
             auth_type = "chap-sha1"
+        },
+        session = {
+            idle_timeout = box.NULL,
         },
         sharding = {
             bucket_count = 3000,

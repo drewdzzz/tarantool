@@ -309,6 +309,18 @@ lbox_cfg_set_net_msg_max(struct lua_State *L)
 	return 0;
 }
 
+/** box.cfg.session_idle_timeout. */
+static int
+lbox_cfg_set_session_idle_timeout(struct lua_State *L)
+{
+	try {
+		box_set_session_idle_timeout();
+	} catch (Exception *) {
+		luaT_error(L);
+	}
+	return 0;
+}
+
 static int
 lbox_set_prepared_stmt_cache_size(struct lua_State *L)
 {
@@ -604,6 +616,7 @@ box_lua_cfg_init(struct lua_State *L)
 		{"cfg_set_instance_name", lbox_cfg_set_instance_name},
 		{"cfg_set_cluster_name", lbox_cfg_set_cluster_name},
 		{"cfg_set_net_msg_max", lbox_cfg_set_net_msg_max},
+		{"cfg_set_session_idle_timeout", lbox_cfg_set_session_idle_timeout},
 		{"cfg_set_sql_cache_size", lbox_set_prepared_stmt_cache_size},
 		{"cfg_set_feedback", lbox_cfg_set_feedback},
 		{"cfg_set_txn_timeout", lbox_cfg_set_txn_timeout},

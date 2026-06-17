@@ -179,6 +179,10 @@ box_is_configured(void);
 int
 box_check_configured(void);
 
+/** Returns session idle timeout for the given user. Zero means no timeout. */
+double
+box_session_idle_timeout(uint8_t auth_token);
+
 /** Check if the slice of main cord has expired. */
 int
 box_check_slice_slow(void);
@@ -439,6 +443,7 @@ void box_set_instance_name(void);
 void box_set_replicaset_name(void);
 void box_set_cluster_name(void);
 void box_set_net_msg_max(void);
+void box_set_session_idle_timeout(void);
 int box_set_prepared_stmt_cache_size(void);
 int box_set_feedback(void);
 int box_set_txn_timeout(void);

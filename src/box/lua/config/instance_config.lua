@@ -892,6 +892,20 @@ return schema.new('instance_config', schema.record({
             }),
         })),
     }),
+    session = schema.record({
+        -- A map from user name to the idle timeout (in seconds) for
+        -- binary connections authenticated as that user.
+        idle_timeout = schema.map({
+            key = schema.scalar({
+                type = 'string',
+            }),
+            value = schema.scalar({
+                type = 'number',
+            }),
+            box_cfg = 'session_idle_timeout',
+            default = box.NULL,
+        }),
+    }),
     database = schema.record({
         instance_uuid = schema.scalar({
             type = 'string',

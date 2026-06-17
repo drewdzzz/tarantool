@@ -605,6 +605,16 @@ struct iproto_msg
 			 * will be created in the TX thread.
 			 */
 			struct session *session;
+			/**
+			 * Idle timeout for the initial user (guest). Set
+			 * in TX thread on successful auth. Zero if the
+			 * user has no timeout.
+			 *
+			 * This timeout is used before the user is
+			 * authenticated in order to close idle
+			 * non-authenticated users.
+			 */
+			double initial_idle_timeout;
 		} connect;
 		/** Box request, if this is a DML */
 		struct request dml;
@@ -617,6 +627,12 @@ struct iproto_msg
 			struct auth_request auth;
 			/** Set if the request was successfully processed. */
 			bool auth_successful;
+			/**
+			 * Idle timeout for the newly authenticated user.
+			 * Set in TX thread on successful auth. Zero if the
+			 * user has no timeout.
+			 */
+			double auth_idle_timeout;
 		};
 		/** Features request. */
 		struct id_request id;
@@ -1009,6 +1025,18 @@ struct iproto_connection
 	 * accepted through iproto listening socket.
 	 */
 	bool is_internal;
+	/**
+	 * Session idle timeout. Resolved by the TX thread at
+	 * connect/auth time (box_session_idle_timeout) and cached here so
+	 * the IPROTO thread can set the timer without a cross-thread lookup.
+	 */
+	double idle_timeout;
+	/**
+	 * Idle timeout watcher. Fires when no input is received
+	 * for the per-user timeout. Disabled when the user's
+	 * timeout is 0 or when `is_in_replication` flag is set.
+	 */
+	struct ev_timer idle_timer;
 };
 
 /** Returns a string suitable for logging. */
@@ -1237,11 +1265,6 @@ iproto_connection_try_to_start_destroy(struct iproto_connection *con)
 	}
 }
 
-/**
- * Initiate a connection shutdown. This method may
- * be invoked many times, and does the internal
- * bookkeeping to only cleanup resources once.
- */
 static inline void
 iproto_connection_close(struct iproto_connection *con)
 {
@@ -1249,6 +1272,7 @@ iproto_connection_close(struct iproto_connection *con)
 		/* Clears all pending events. */
 		ev_io_stop(con->loop, &con->input);
 		ev_io_stop(con->loop, &con->output);
+		ev_timer_stop(con->loop, &con->idle_timer);
 		/*
 		 * Invalidate fd to prevent undefined behavior in case
 		 * we mistakenly try to use it after this point.
@@ -1292,6 +1316,45 @@ iproto_connection_close(struct iproto_connection *con)
 		assert(con->state == IPROTO_CONNECTION_CLOSED);
 	}
 	rlist_del(&con->in_stop_list);
+}
+
+/** (Re)set the idle timer for a connection, safe to call multiple times. */
+static inline void
+iproto_connection_update_idle_timer(struct iproto_connection *con)
+{
+	ev_timer_stop(con->loop, &con->idle_timer);
+	/* Never set timer for replication connections. */
+	if (con->is_in_replication)
+		return;
+	double timeout = con->idle_timeout;
+	if (timeout > 0 && con->state == IPROTO_CONNECTION_ALIVE) {
+		ev_timer_set(&con->idle_timer, timeout, /*repeat=*/0);
+		ev_timer_start(con->loop, &con->idle_timer);
+	}
+}
+
+/**
+ * Libev callback: fires when the connection has been idle for
+ * the configured timeout with no incoming data.
+ */
+static void
+iproto_connection_idle_timeout_cb(ev_loop *loop, struct ev_timer *watcher,
+				  int /*revents*/)
+{
+	(void)loop;
+	struct iproto_connection *con =
+		(struct iproto_connection *)watcher->data;
+	if (con->state != IPROTO_CONNECTION_ALIVE)
+		return;
+	assert(!con->is_in_replication);
+	/* Requests are in flight - just reset the timer. */
+	if (con->request_count > 0) {
+		iproto_connection_update_idle_timer(con);
+		return;
+	}
+	say_info("closing connection %s: idle for %.1f second(s)",
+		 iproto_connection_name(con), con->idle_timeout);
+	iproto_connection_close(con);
 }
 
 static inline struct ibuf *
@@ -1652,6 +1715,8 @@ iproto_connection_on_input(ev_loop *loop, struct ev_io *watcher,
 	}
 	/* Count statistics */
 	rmean_collect(con->iproto_thread->rmean, IPROTO_RECEIVED, nrd);
+	/* Client sent data -- reset the idle timer. */
+	iproto_connection_update_idle_timer(con);
 
 	/* Update the read position and connection state. */
 	ibuf_alloc(in, nrd);
@@ -1854,6 +1919,10 @@ iproto_connection_new(struct iproto_thread *iproto_thread)
 	rmean_collect(iproto_thread->rmean, IPROTO_CONNECTIONS, 1);
 	con->request_count = 0;
 	con->is_internal = false;
+	con->idle_timeout = 0;
+	con->idle_timer.data = con;
+	ev_timer_init(&con->idle_timer, iproto_connection_idle_timeout_cb,
+		      0, 0);
 	return con;
 }
 
@@ -2055,6 +2124,11 @@ iproto_msg_prepare(struct iproto_msg *msg, const char **pos, const char *reqend)
 			goto error;
 		}
 		con->is_in_replication = true;
+		/*
+		 * Stop the idle timer: replication connections
+		 * are never subject to the idle timeout.
+		 */
+		iproto_connection_update_idle_timer(con);
 	}
 
 	handler = mh_i32_find(handlers, type, NULL);
@@ -3081,6 +3155,8 @@ tx_process_auth(struct cmsg *m)
 	if (box_process_auth(&msg->auth, con->salt, IPROTO_SALT_SIZE) != 0)
 		goto error;
 	msg->auth_successful = true;
+	msg->auth_idle_timeout = box_session_idle_timeout(
+		con->session->credentials.auth_token);
 	iproto_reply_ok(out, msg->header.sync, ::schema_version);
 	iproto_wpos_create(&msg->wpos, out);
 	tx_end_msg(msg, &svp);
@@ -3133,6 +3209,12 @@ net_finish_auth(struct cmsg *m)
 			cpipe_push(&iproto_thread->srv[i].pipe,
 				   &finish_auth_msg->base);
 		}
+		/*
+		 * Update con->idle_timeout in the IPROTO thread (sole owner
+		 * of this field) and re-arm the idle timer for the new user.
+		 */
+		con->idle_timeout = msg->auth_idle_timeout;
+		iproto_connection_update_idle_timer(con);
 	}
 	net_send_msg(m);
 }
@@ -3681,6 +3763,11 @@ net_end_join(struct cmsg *m)
 
 	assert(! ev_is_active(&con->input));
 	con->is_in_replication = false;
+	/*
+	 * Set the idle timer now that the connection is no
+	 * longer in replication mode.
+	 */
+	iproto_connection_update_idle_timer(con);
 
 	if (con->is_drop_pending) {
 		iproto_connection_close(con);
@@ -3726,6 +3813,8 @@ tx_process_connect(struct cmsg *m)
 		con->session = session_new(SESSION_TYPE_BINARY);
 	}
 	con->session->meta.connection = con;
+	msg->connect.initial_idle_timeout = box_session_idle_timeout(
+		con->session->credentials.auth_token);
 	session_set_peer_addr(con->session, &msg->connect.addr,
 			      msg->connect.addrlen);
 	iproto_features_create(&con->session->meta.features);
@@ -3777,6 +3866,9 @@ net_send_greeting(struct cmsg *m)
 		return;
 	}
 	con->is_established = true;
+	con->idle_timeout = msg->connect.initial_idle_timeout;
+	/* Set the idle timer for the initial user. */
+	iproto_connection_update_idle_timer(con);
 	con->srv[msg->srv_id].wend = msg->wpos;
 	/*
 	 * Connect is synchronous, so no one could have been
